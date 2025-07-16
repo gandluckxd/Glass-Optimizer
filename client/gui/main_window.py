@@ -2650,17 +2650,17 @@ class OptimizerWindow(QWidget):
             cut = SubElement(map_elem, "cut")
             
             if cut_info["orientation"] == "horiz":
-                # Для горизонтальных резов: y, x1, x2, orientation (последний)
+                # Для горизонтальных резов: y, x2, x1, orientation (последний)
                 cut.set("y", str(int(cut_info["y"])))
-                cut.set("x1", str(int(cut_info["x1"])))
                 cut.set("x2", str(int(cut_info["x2"])))
+                cut.set("x1", str(int(cut_info["x1"])))
                 cut.set("orientation", cut_info["orientation"])
             else:  # vert
-                # Для вертикальных резов: x, orientation (второй), y1, y2
+                # Для вертикальных резов: x, orientation (второй), y2, y1
                 cut.set("x", str(int(cut_info["x"])))
                 cut.set("orientation", cut_info["orientation"])
-                cut.set("y1", str(int(cut_info["y1"])))
                 cut.set("y2", str(int(cut_info["y2"])))
+                cut.set("y1", str(int(cut_info["y1"])))
 
     def _calculate_actual_piece_dimensions(self, sheet_layout):
         """

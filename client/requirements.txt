@@ -1,4 +1,4 @@
-ortools==9.7.2996
 requests==2.31.0
 PyQt5==5.15.10
-rectpack==0.2.2 
+rectpack==0.2.2
+pyinstaller==6.14.2
