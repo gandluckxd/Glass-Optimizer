@@ -2263,7 +2263,10 @@ class OptimizerWindow(QWidget):
             actual_width, actual_height = piece_dimensions.get(i, (placed_detail.width, placed_detail.height))
             piece.set("width", str(int(actual_width)))
             piece.set("height", str(int(actual_height)))
-            piece.set("direction", "1" if placed_detail.is_rotated else "0")
+            
+            # direction зависит от поворота детали (rotate)
+            direction_value = "1" if placed_detail.is_rotated else "0"
+            piece.set("direction", direction_value)
             
             # Формируем содержимое piece по формату Altawin:
             # Строка 1: Наименование материала (Артикул заполнения)
@@ -2312,16 +2315,13 @@ class OptimizerWindow(QWidget):
             piece_map.set("x", str(int(placed_detail.x)))
             piece_map.set("y", str(int(placed_detail.y)))
             
-            # ИСПРАВЛЕНО: Упрощенная логика rotate - всегда вертикальный текст
-            # Судя по правильному XML, для стекла всегда используется rotate="0" (вертикальный текст)
-            # Это обеспечивает правильное отображение текста в Altawin
-            
-            rotate_value = "0"  # Всегда вертикальный текст для стекла
+            # rotate зависит от поворота детали (direction)
+            rotate_value = "1" if placed_detail.is_rotated else "0"
             
             piece_map.set("rotate", rotate_value)
             
             print(f"📄 XML piece {i}: размеры {int(placed_detail.width)}x{int(placed_detail.height)}, "
-                  f"direction={placed_detail.is_rotated}, rotate={rotate_value} (вертикальный текст)")
+                  f"direction={rotate_value}, rotate={rotate_value} (зависят от поворота детали)")
         
         # Добавляем резы (используем уже сгенерированные)
         self._add_cuts_to_xml_with_cuts(map_elem, cuts)
