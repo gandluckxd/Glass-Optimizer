@@ -420,7 +420,7 @@ class GuillotineOptimizer:
                         if area.width >= width and area.height >= height:
                             # Проверяем, что разрез создаст допустимые остатки
                             if self._is_valid_guillotine_cut(area, width, height):
-                                score = self._calculate_guillotine_score(area, width, height)
+                                score = self._calculate_guillotine_score(area, width, height, is_rotated)
                                 if score < best_score:
                                     best_score = score
                                     best_placement = (detail, width, height, is_rotated, area)
@@ -483,7 +483,7 @@ class GuillotineOptimizer:
         
         return True
 
-    def _calculate_guillotine_score(self, area: Rectangle, width: float, height: float) -> float:
+    def _calculate_guillotine_score(self, area: Rectangle, width: float, height: float, is_rotated: bool = False) -> float:
         """Вычисляет оценку для гильотинного размещения"""
         # Предпочитаем размещения, которые минимизируют остатки
         waste = area.area - (width * height)
@@ -491,6 +491,10 @@ class GuillotineOptimizer:
         # Бонус за точное соответствие размерам
         if abs(area.width - width) < 0.1 or abs(area.height - height) < 0.1:
             waste *= 0.5
+        
+        # Штраф за поворот детали (предпочитаем исходную ориентацию)
+        if is_rotated:
+            waste *= 1.2
         
         return waste
 

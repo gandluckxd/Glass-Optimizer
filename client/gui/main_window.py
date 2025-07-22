@@ -2251,20 +2251,22 @@ class OptimizerWindow(QWidget):
         # Генерируем резы один раз для использования в разных местах
         cuts = self._generate_guillotine_cuts(sheet_layout)
         
-        # Пересчитываем реальные размеры кусков на основе геометрии раскроя
-        piece_dimensions = self._calculate_actual_piece_dimensions_with_cuts(sheet_layout, cuts)
-        
         # Добавляем все размещенные детали
         for i, placed_detail in enumerate(sheet_layout.placed_details):
             piece = SubElement(pieces, "piece")
             piece.set("num", str(i))
             
-            # Используем пересчитанные размеры вместо исходных
-            actual_width, actual_height = piece_dimensions.get(i, (placed_detail.width, placed_detail.height))
-            piece.set("width", str(int(actual_width)))
-            piece.set("height", str(int(actual_height)))
+            # Используем исходные размеры детали (НЕ повернутые!)
+            if placed_detail.is_rotated:
+                # Если деталь повернута, меняем местами размеры
+                piece.set("width", str(int(placed_detail.detail.height)))
+                piece.set("height", str(int(placed_detail.detail.width)))
+            else:
+                # Если деталь не повернута, используем исходные размеры
+                piece.set("width", str(int(placed_detail.detail.width)))
+                piece.set("height", str(int(placed_detail.detail.height)))
             
-            # direction зависит от поворота детали (rotate)
+            # direction зависит от поворота детали
             direction_value = "1" if placed_detail.is_rotated else "0"
             piece.set("direction", direction_value)
             
@@ -2315,13 +2317,11 @@ class OptimizerWindow(QWidget):
             piece_map.set("x", str(int(placed_detail.x)))
             piece_map.set("y", str(int(placed_detail.y)))
             
-            # rotate зависит от поворота детали (direction)
-            rotate_value = "1" if placed_detail.is_rotated else "0"
-            
-            piece_map.set("rotate", rotate_value)
+            # rotate всегда 0 (не повернуты в map)
+            piece_map.set("rotate", "0")
             
             print(f"📄 XML piece {i}: размеры {int(placed_detail.width)}x{int(placed_detail.height)}, "
-                  f"direction={rotate_value}, rotate={rotate_value} (зависят от поворота детали)")
+                  f"direction={direction_value}, rotate=0 (direction зависит от поворота, rotate всегда 0)")
         
         # Добавляем резы (используем уже сгенерированные)
         self._add_cuts_to_xml_with_cuts(map_elem, cuts)
@@ -2645,22 +2645,22 @@ class OptimizerWindow(QWidget):
         
         print(f"🔧 Добавление {len(cuts)} резов в XML")
         
-        # Добавляем резы в порядке, который ожидает Altawin
+        # Добавляем резы в правильном порядке параметров для Altawin
         for cut_info in cuts:
             cut = SubElement(map_elem, "cut")
             
             if cut_info["orientation"] == "horiz":
-                # Для горизонтальных резов: y, x2, x1, orientation (последний)
+                # Для горизонтальных резов: y, orientation, x1, x2
                 cut.set("y", str(int(cut_info["y"])))
-                cut.set("x2", str(int(cut_info["x2"])))
-                cut.set("x1", str(int(cut_info["x1"])))
                 cut.set("orientation", cut_info["orientation"])
+                cut.set("x1", str(int(cut_info["x1"])))
+                cut.set("x2", str(int(cut_info["x2"])))
             else:  # vert
-                # Для вертикальных резов: x, orientation (второй), y2, y1
+                # Для вертикальных резов: x, orientation, y1, y2
                 cut.set("x", str(int(cut_info["x"])))
                 cut.set("orientation", cut_info["orientation"])
-                cut.set("y2", str(int(cut_info["y2"])))
                 cut.set("y1", str(int(cut_info["y1"])))
+                cut.set("y2", str(int(cut_info["y2"])))
 
     def _calculate_actual_piece_dimensions(self, sheet_layout):
         """
