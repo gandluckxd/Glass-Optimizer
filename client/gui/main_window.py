@@ -27,6 +27,7 @@ import os
 import json
 import logging
 from .dialogs import DebugDialog, ProgressDialog
+from .settings_manager import SettingsManager
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ class OptimizerWindow(QWidget):
         self.optimization_result = None
         self.current_sheet_index = 0
         self.auto_load_debug = False
+        
+        # Инициализация менеджера настроек
+        self.settings_manager = SettingsManager()
         
         # Инициализация диалогов
         self.debug_dialog = None
@@ -512,21 +516,18 @@ class OptimizerWindow(QWidget):
         # Минимальная ширина остатка
         self.min_remnant_width = QSpinBox()
         self.min_remnant_width.setRange(10, 1000)
-        self.min_remnant_width.setValue(180)  # Установлено согласно требованиям Артема
         self.min_remnant_width.setSuffix(" мм")
         layout.addRow("Мин. ширина остатка:", self.min_remnant_width)
         
         # Минимальная высота остатка
         self.min_remnant_height = QSpinBox()
         self.min_remnant_height.setRange(10, 1000)
-        self.min_remnant_height.setValue(100)  # Установлено согласно требованиям Артема
         self.min_remnant_height.setSuffix(" мм")
         layout.addRow("Мин. высота остатка:", self.min_remnant_height)
         
         # Целевой процент отходов
         self.target_waste_percent = QSpinBox()
         self.target_waste_percent.setRange(1, 20)
-        self.target_waste_percent.setValue(5)  # ИЗМЕНЕНО: Увеличено с 3% до 5% для реальных данных
         self.target_waste_percent.setSuffix(" %")
         self.target_waste_percent.setStyleSheet("""
             QSpinBox {
@@ -541,24 +542,45 @@ class OptimizerWindow(QWidget):
         # Минимальная сторона обрезка
         self.min_cut_size = QSpinBox()
         self.min_cut_size.setRange(5, 50)
-        self.min_cut_size.setValue(10)
         self.min_cut_size.setSuffix(" мм")
         layout.addRow("Минимальная сторона обрезка:", self.min_cut_size)
         
         # Использование остатков
         self.use_remainders = QCheckBox("Использовать остатки со склада")
-        self.use_remainders.setChecked(True)
         layout.addRow(self.use_remainders)
         
         # Поворот деталей
         self.allow_rotation = QCheckBox("Разрешить поворот деталей")
-        self.allow_rotation.setChecked(True)
         layout.addRow(self.allow_rotation)
         
-        # Кнопка оптимизации
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
+        # Загружаем сохраненные настройки или используем значения по умолчанию
+        self.load_optimization_settings()
         
+        # Кнопки на одном уровне
+        buttons_layout = QHBoxLayout()
+        
+        # Кнопка сохранения настроек (слева)
+        self.save_settings_button = QPushButton("💾 Сохранить начальные параметры")
+        self.save_settings_button.clicked.connect(self.on_save_settings_clicked)
+        self.save_settings_button.setStyleSheet("""
+            QPushButton {
+                background-color: #0078d4;
+                color: white;
+                font-weight: bold;
+                font-size: 11pt;
+                padding: 10px 20px;
+                min-width: 280px;
+            }
+            QPushButton:hover {
+                background-color: #106ebe;
+            }
+        """)
+        buttons_layout.addWidget(self.save_settings_button)
+        
+        # Добавляем растяжку между кнопками
+        buttons_layout.addStretch()
+        
+        # Кнопка оптимизации (справа)
         self.optimize_button = QPushButton("🚀 Запустить оптимизацию")
         self.optimize_button.clicked.connect(self.on_optimize_clicked)
         self.optimize_button.setEnabled(False)
@@ -579,9 +601,9 @@ class OptimizerWindow(QWidget):
                 color: #888888;
             }
         """)
-        button_layout.addWidget(self.optimize_button)
+        buttons_layout.addWidget(self.optimize_button)
         
-        layout.addRow(button_layout)
+        layout.addRow(buttons_layout)
         
         params_group.setLayout(layout)
         return params_group
@@ -2732,3 +2754,71 @@ class OptimizerWindow(QWidget):
                 print(f"⚠️ Кусок {piece_idx}: не найдена ячейка, используем исходные размеры")
         
         return piece_dimensions
+
+    def load_optimization_settings(self):
+        """Загрузка настроек оптимизации из файла или установка значений по умолчанию"""
+        try:
+            settings = self.settings_manager.load_settings()
+            
+            # Устанавливаем значения в поля
+            self.min_remnant_width.setValue(settings.get('min_remnant_width', 180))
+            self.min_remnant_height.setValue(settings.get('min_remnant_height', 100))
+            self.target_waste_percent.setValue(settings.get('target_waste_percent', 5))
+            self.min_cut_size.setValue(settings.get('min_cut_size', 10))
+            self.use_remainders.setChecked(settings.get('use_remainders', True))
+            self.allow_rotation.setChecked(settings.get('allow_rotation', True))
+            
+            print(f"🔧 DEBUG: Настройки загружены: {settings}")
+            
+        except Exception as e:
+            print(f"Ошибка при загрузке настроек: {e}")
+            # Устанавливаем значения по умолчанию
+            self.min_remnant_width.setValue(180)
+            self.min_remnant_height.setValue(100)
+            self.target_waste_percent.setValue(5)
+            self.min_cut_size.setValue(10)
+            self.use_remainders.setChecked(True)
+            self.allow_rotation.setChecked(True)
+    
+    def on_save_settings_clicked(self):
+        """Обработчик нажатия кнопки сохранения настроек"""
+        try:
+            # Собираем текущие значения параметров
+            settings = {
+                'min_remnant_width': self.min_remnant_width.value(),
+                'min_remnant_height': self.min_remnant_height.value(),
+                'target_waste_percent': self.target_waste_percent.value(),
+                'min_cut_size': self.min_cut_size.value(),
+                'use_remainders': self.use_remainders.isChecked(),
+                'allow_rotation': self.allow_rotation.isChecked()
+            }
+            
+            # Сохраняем настройки
+            if self.settings_manager.save_settings(settings):
+                QMessageBox.information(
+                    self,
+                    "Настройки сохранены",
+                    "Параметры оптимизации успешно сохранены!\n\n"
+                    "При следующем запуске программы эти значения будут установлены по умолчанию.",
+                    QMessageBox.Ok
+                )
+                print(f"💾 Настройки сохранены: {settings}")
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Ошибка сохранения",
+                    "Не удалось сохранить настройки.\n"
+                    "Проверьте права доступа к папке программы.",
+                    QMessageBox.Ok
+                )
+                
+        except Exception as e:
+            print(f"Ошибка при сохранении настроек: {e}")
+            QMessageBox.critical(
+                self,
+                "Ошибка",
+                f"Произошла ошибка при сохранении настроек:\n{str(e)}",
+                QMessageBox.Ok
+            )
+    
+
