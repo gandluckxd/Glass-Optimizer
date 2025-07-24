@@ -74,6 +74,11 @@ def get_warehouse_remainders(goodsid):
     data = {"goodsid": goodsid}
     return api_request('warehouse-remainders', data, 'POST')
 
+def get_goods_price(goodsid):
+    """Получение стоимости товара по goodsid"""
+    data = {"goodsid": goodsid}
+    return api_request('goods-price', data, 'POST')
+
 def upload_optimization_data(grorderid: int, optimization_data: list, adjust_materials: bool = False):
     """
     Загрузка данных оптимизации в Altawin

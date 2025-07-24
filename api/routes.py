@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from models import DetailsRawRequest, WarehouseRemainderRequest, WarehouseMainMaterialRequest
-from db_functions import get_tables, get_details_raw, get_warehouse_remainders, get_warehouse_main_material
+from db_functions import get_tables, get_details_raw, get_warehouse_remainders, get_warehouse_main_material, get_goods_price
 import asyncio
 import time
 
@@ -57,3 +57,15 @@ def warehouse_remainders(request: WarehouseRemainderRequest):
 @router.post("/warehouse-main-material")
 def warehouse_main_material(request: WarehouseMainMaterialRequest):
     return get_warehouse_main_material(request.goodsid)
+
+@router.post("/goods-price")
+def goods_price(request: WarehouseRemainderRequest):
+    """
+    Получить стоимость товара по goodsid
+    """
+    try:
+        price = get_goods_price(request.goodsid)
+        return {"price": price, "goodsid": request.goodsid}
+    except Exception as e:
+        print(f"❌ API ERROR (goods-price): {e}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

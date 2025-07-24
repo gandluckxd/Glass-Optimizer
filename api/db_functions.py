@@ -173,6 +173,10 @@ def get_warehouse_remainders(goodsid: int):
     try:
         con = get_db_connection()
         cur = con.cursor()
+        
+        # Получаем стоимость товара
+        price = get_goods_price(goodsid)
+        
         sql = """
         select
             g.marking as g_marking,
@@ -195,7 +199,8 @@ def get_warehouse_remainders(goodsid: int):
                 "width": row[2],
                 "height": row[3],
                 "qty": row[4],
-                "amfactor": row[5]
+                "amfactor": row[5],
+                "cost": price  # Добавляем стоимость
             }
             for row in cur.fetchall()
         ]
@@ -209,6 +214,10 @@ def get_warehouse_main_material(goodsid: int):
     try:
         con = get_db_connection()
         cur = con.cursor()
+        
+        # Получаем стоимость товара
+        price = get_goods_price(goodsid)
+        
         sql = """
         select t.*, wh.qty, wh.qty / t.amfactor as res_qty, wh.measureid as wh_measureid
         from(
@@ -239,7 +248,8 @@ def get_warehouse_main_material(goodsid: int):
                 "amfactor": row[5],
                 "qty": row[6],
                 "res_qty": row[7],
-                "wh_measureid": row[8]
+                "wh_measureid": row[8],
+                "cost": price  # Добавляем стоимость
             }
             for row in cur.fetchall()
         ]
@@ -801,14 +811,6 @@ def adjust_materials_for_optimization(con, grorderid: int, sheets_data: list):
         if supplyid:
             print(f"🔧 DB: Удаление существующих элементов прихода...")
             try:
-                # Сначала проверим, сколько записей есть в supplydetail для данного supplyid
-                check_supply_detail_sql = """
-                SELECT COUNT(*) FROM supplydetail WHERE supplyid = ?
-                """
-                cur.execute(check_supply_detail_sql, (supplyid,))
-                supply_detail_count = cur.fetchone()[0]
-                print(f"🔧 DB: Найдено {supply_detail_count} записей в supplydetail для supplyid={supplyid}")
-                
                 # Проверим, сколько записей есть в supplyremainder для данного supplyid
                 check_supply_remainder_sql = """
                 SELECT COUNT(*) FROM supplyremainder WHERE supplyid = ?
@@ -818,16 +820,6 @@ def adjust_materials_for_optimization(con, grorderid: int, sheets_data: list):
                 print(f"🔧 DB: Найдено {supply_remainder_count} записей в supplyremainder для supplyid={supplyid}")
                 
                 # Проверим, сколько записей соответствуют фильтру ggtypeid = 38
-                check_supply_detail_filtered_sql = """
-                SELECT COUNT(*) FROM supplydetail supdet
-                JOIN goods g ON g.goodsid = supdet.goodsid
-                JOIN groupgoods gg ON gg.grgoodsid = g.grgoodsid
-                WHERE supdet.supplyid = ? AND gg.ggtypeid = 38
-                """
-                cur.execute(check_supply_detail_filtered_sql, (supplyid,))
-                supply_detail_filtered_count = cur.fetchone()[0]
-                print(f"🔧 DB: Найдено {supply_detail_filtered_count} записей в supplydetail с ggtypeid = 38")
-                
                 check_supply_remainder_filtered_sql = """
                 SELECT COUNT(*) FROM supplyremainder suprem
                 JOIN goods g ON g.goodsid = suprem.goodsid
@@ -837,20 +829,6 @@ def adjust_materials_for_optimization(con, grorderid: int, sheets_data: list):
                 cur.execute(check_supply_remainder_filtered_sql, (supplyid,))
                 supply_remainder_filtered_count = cur.fetchone()[0]
                 print(f"🔧 DB: Найдено {supply_remainder_filtered_count} записей в supplyremainder с ggtypeid = 38")
-                
-                # Удаляем записи из supplydetail с фильтром по ggtypeid = 38
-                delete_supply_detail_sql = """
-                DELETE FROM supplydetail WHERE supplydetailid IN (
-                    SELECT supdet.supplydetailid
-                    FROM supplydetail supdet
-                    JOIN goods g ON g.goodsid = supdet.goodsid
-                    JOIN groupgoods gg ON gg.grgoodsid = g.grgoodsid
-                    WHERE supdet.supplyid = ? AND gg.ggtypeid = 38
-                )
-                """
-                cur.execute(delete_supply_detail_sql, (supplyid,))
-                deleted_supply_details = cur.rowcount
-                print(f"🔧 DB: Удалено {deleted_supply_details} элементов прихода из supplydetail")
                 
                 # Удаляем записи из supplyremainder с фильтром по ggtypeid = 38
                 delete_supply_remainder_sql = """
@@ -924,6 +902,10 @@ def adjust_materials_for_optimization(con, grorderid: int, sheets_data: list):
                 qty = remainder_data['qty']  # Количество остатков данного размера
                 
                 try:
+                    # Получаем стоимость товара
+                    price = get_goods_price(goodsid)
+                    print(f"🔧 DB: Стоимость товара: {price}")
+                    
                     # Вставляем полученный деловой остаток в приход
                     insert_supply_remainder_sql = """
                     INSERT INTO SUPPLYREMAINDER (
@@ -931,11 +913,11 @@ def adjust_materials_for_optimization(con, grorderid: int, sheets_data: list):
                         THICK, WIDTH, HEIGHT, QTY, SELLERPRICE, SELLERCURRENCYID
                     ) VALUES (
                         gen_id(gen_supplyremainder, 1), ?, ?, 0, 
-                        0, ?, ?, ?, 0, 1
+                        0, ?, ?, ?, ?, 1
                     )
                     """
-                    print(f"🔧 DB: Выполняем INSERT в SUPPLYREMAINDER с параметрами: supplyid={supplyid}, goodsid={goodsid}, width={width}, height={height}, qty={qty} (количество остатков)")
-                    cur.execute(insert_supply_remainder_sql, (supplyid, goodsid, width, height, qty))
+                    print(f"🔧 DB: Выполняем INSERT в SUPPLYREMAINDER с параметрами: supplyid={supplyid}, goodsid={goodsid}, width={width}, height={height}, qty={qty}, price={price} (количество остатков)")
+                    cur.execute(insert_supply_remainder_sql, (supplyid, goodsid, width, height, qty, price))
                     
                     # Проверяем результат вставки
                     if hasattr(cur, 'rowcount'):
@@ -1005,3 +987,34 @@ def adjust_materials_for_optimization(con, grorderid: int, sheets_data: list):
                 "total_time": round(total_time, 2)
             }
         }
+
+def get_goods_price(goodsid: int):
+    """
+    Получить стоимость товара по goodsid
+    """
+    try:
+        con = get_db_connection()
+        cur = con.cursor()
+        
+        # Получаем цену из поля price1
+        sql = """
+        SELECT 
+            COALESCE(g.price1, 0) as price
+        FROM goods g 
+        WHERE g.goodsid = ?
+        """
+        
+        cur.execute(sql, (goodsid,))
+        result = cur.fetchone()
+        
+        if result:
+            price = result[0] or 0
+            con.close()
+            return price
+        else:
+            con.close()
+            return 0
+            
+    except Exception as e:
+        print(f"DB ERROR (goods-price): {e}")
+        return 0
