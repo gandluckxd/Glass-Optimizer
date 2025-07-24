@@ -528,7 +528,9 @@ class GuillotineOptimizer:
 
     def _fill_remaining_areas(self, layout: SheetLayout, free_areas: List[Rectangle]):
         """Заполняет все оставшиеся области как остатки или отходы"""
-        for area in free_areas:
+        print(f"🔧 OPTIMIZER: Заполнение оставшихся областей. Количество областей: {len(free_areas)}")
+        
+        for i, area in enumerate(free_areas):
             # Классифицируем область
             min_side = min(area.width, area.height)
             max_side = max(area.width, area.height)
@@ -537,8 +539,10 @@ class GuillotineOptimizer:
             
             if min_side >= param_min and max_side >= param_max:
                 item_type = "remnant"
+                print(f"🔧 OPTIMIZER: Область {i+1}: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК")
             else:
                 item_type = "waste"
+                print(f"🔧 OPTIMIZER: Область {i+1}: {area.width:.0f}x{area.height:.0f} - ОТХОД (min_side={min_side:.0f}, param_min={param_min:.0f})")
             
             placed_item = PlacedItem(
                 x=area.x,
@@ -550,6 +554,11 @@ class GuillotineOptimizer:
                 is_rotated=False
             )
             layout.placed_items.append(placed_item)
+        
+        # Подсчитываем итоги
+        remnants_count = len([item for item in layout.placed_items if item.item_type == "remnant"])
+        waste_count = len([item for item in layout.placed_items if item.item_type == "waste"])
+        print(f"🔧 OPTIMIZER: Итоги заполнения - Деловых остатков: {remnants_count}, Отходов: {waste_count}")
         
         # Дополнительная проверка на 100% покрытие
         total_area_covered = sum(item.area for item in layout.placed_items)

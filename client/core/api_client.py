@@ -74,13 +74,14 @@ def get_warehouse_remainders(goodsid):
     data = {"goodsid": goodsid}
     return api_request('warehouse-remainders', data, 'POST')
 
-def upload_optimization_data(grorderid: int, optimization_data: list):
+def upload_optimization_data(grorderid: int, optimization_data: list, adjust_materials: bool = False):
     """
     Загрузка данных оптимизации в Altawin
     
     Args:
         grorderid: ID сменного задания
         optimization_data: Список данных оптимизации для каждого листа
+        adjust_materials: Флаг корректировки списания материалов
     
     Returns:
         dict: Результат загрузки
@@ -88,13 +89,22 @@ def upload_optimization_data(grorderid: int, optimization_data: list):
     try:
         print(f"🔄 API: Отправка данных оптимизации для grorderid={grorderid}")
         print(f"📊 API: Количество листов: {len(optimization_data)}")
+        print(f"🔧 API: Корректировка материалов: {'ВКЛЮЧЕНА' if adjust_materials else 'ОТКЛЮЧЕНА'}")
         
         url = f"{API_URL}/upload-optimization"
         
         payload = {
             "grorderid": grorderid,
-            "sheets": optimization_data
+            "sheets": optimization_data,
+            "adjust_materials": adjust_materials
         }
+        
+        # Логируем информацию о листах
+        print(f"📋 API: Информация о листах:")
+        for i, sheet in enumerate(optimization_data):
+            is_remainder = sheet.get('is_remainder', 0)
+            goodsid = sheet.get('goodsid')
+            print(f"📋 API: Лист {i+1}: goodsid={goodsid}, is_remainder={is_remainder}")
         
         # Логируем первый лист для отладки (без XML)
         if optimization_data:

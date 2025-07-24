@@ -966,6 +966,32 @@ class OptimizerWindow(QWidget):
         upload_layout = QHBoxLayout()
         upload_layout.addStretch()  # Выравнивание по центру
         
+        # Галочка для корректировки списания материалов
+        self.adjust_materials_checkbox = QCheckBox("Скорректировать списание материалов")
+        self.adjust_materials_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-size: 11pt;
+                color: white;
+                margin: 5px 0px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 2px solid #cccccc;
+                background-color: white;
+                border-radius: 3px;
+            }
+            QCheckBox::indicator:checked {
+                border: 2px solid #0078d4;
+                background-color: #0078d4;
+                border-radius: 3px;
+            }
+        """)
+        self.adjust_materials_checkbox.setToolTip("При включении будет выполнена корректировка списания материалов и приход деловых остатков в базе данных")
+        upload_layout.addWidget(self.adjust_materials_checkbox)
+        
         self.upload_to_altawin_button = QPushButton("📤 Загрузить данные оптимизации в Altawin")
         self.upload_to_altawin_button.setStyleSheet("""
             QPushButton {
@@ -991,6 +1017,7 @@ class OptimizerWindow(QWidget):
         """)
         self.upload_to_altawin_button.clicked.connect(self.on_upload_to_altawin)
         self.upload_to_altawin_button.setEnabled(False)  # Изначально отключена
+        self.adjust_materials_checkbox.setEnabled(False)  # Изначально отключена
         self.upload_to_altawin_button.setToolTip("Загрузить результаты оптимизации обратно в базу данных Altawin")
         
         upload_layout.addWidget(self.upload_to_altawin_button)
@@ -1879,6 +1906,7 @@ class OptimizerWindow(QWidget):
         # Активируем кнопку загрузки в Altawin если есть grorderid
         if hasattr(self, 'current_grorderid') and self.current_grorderid:
             self.upload_to_altawin_button.setEnabled(True)
+            self.adjust_materials_checkbox.setEnabled(True)
             print(f"✅ Кнопка загрузки в Altawin активирована для grorderid={self.current_grorderid}")
         else:
             print(f"⚠️ Кнопка загрузки в Altawin не активирована - отсутствует grorderid")
@@ -2067,12 +2095,17 @@ class OptimizerWindow(QWidget):
     def _upload_optimization_data_to_altawin(self):
         """Загрузка данных оптимизации в базу данных Altawin"""
         
-        # Блокируем кнопку
+        # Блокируем кнопку и галочку
         self.upload_to_altawin_button.setEnabled(False)
         self.upload_to_altawin_button.setText("📤 Загрузка...")
+        self.adjust_materials_checkbox.setEnabled(False)
         
         try:
             print(f"🔄 Начинаем загрузку данных оптимизации в Altawin для grorderid={self.current_grorderid}")
+            
+            # Проверяем состояние галочки корректировки материалов
+            adjust_materials = self.adjust_materials_checkbox.isChecked()
+            print(f"🔧 Корректировка списания материалов: {'ВКЛЮЧЕНА' if adjust_materials else 'ОТКЛЮЧЕНА'}")
             
             # Импортируем функции для работы с API - исправляем относительный импорт
             import sys
@@ -2106,20 +2139,53 @@ class OptimizerWindow(QWidget):
                     raise Exception(f"Некорректный goodsid={goodsid} для листа #{i+1}. Проверьте данные материалов.")
                 print(f"📋 Лист #{i+1}: goodsid={goodsid}, материал={self.optimization_result.sheets[i].sheet.material}")
             
-            # Отправляем данные через API
-            result = upload_optimization_data(self.current_grorderid, optimization_data)
+            # Отправляем данные через API с флагом корректировки материалов
+            print(f"🔧 Клиент: Отправляем данные с флагом корректировки материалов: {adjust_materials}")
+            print(f"🔧 Клиент: Количество листов: {len(optimization_data)}")
+            
+            # Логируем информацию о листах
+            print(f"🔧 Клиент: Детальная информация о листах:")
+            remainder_count = 0
+            material_count = 0
+            for i, sheet_data in enumerate(optimization_data):
+                is_remainder = sheet_data.get('is_remainder', 0)
+                goodsid = sheet_data.get('goodsid')
+                material = self.optimization_result.sheets[i].sheet.material
+                print(f"🔧 Клиент: Лист {i+1}: goodsid={goodsid}, is_remainder={is_remainder}, материал={material}")
+                if is_remainder:
+                    remainder_count += 1
+                else:
+                    material_count += 1
+            
+            print(f"🔧 Клиент: Итого: {material_count} основных материалов, {remainder_count} деловых остатков")
+            
+            print(f"🚀 Клиент: Отправляем данные на сервер...")
+            print(f"🚀 Клиент: grorderid={self.current_grorderid}")
+            print(f"🚀 Клиент: adjust_materials={adjust_materials}")
+            
+            result = upload_optimization_data(self.current_grorderid, optimization_data, adjust_materials)
+            
+            print(f"📡 Клиент: Получен ответ от сервера: {result}")
             
             if result.get('success'):
                 print(f"✅ Данные успешно загружены в Altawin!")
+                
+                # Формируем сообщение об успехе с учетом корректировки материалов
+                success_message = f"✅ Данные оптимизации успешно загружены в Altawin!\n\n"
+                success_message += f"Сменное задание: {self.current_grorderid}\n"
+                success_message += f"Загружено листов: {len(optimization_data)}\n"
+                success_message += f"Общая эффективность: {self.optimization_result.total_efficiency:.1f}%"
+                
+                if adjust_materials:
+                    success_message += f"\n\n📋 Корректировка списания материалов выполнена"
+                    if result.get('materials_adjusted'):
+                        success_message += f"\n✅ Списания и приходы материалов обновлены"
                 
                 # Показываем сообщение об успехе
                 QMessageBox.information(
                     self,
                     "Загрузка завершена",
-                    f"✅ Данные оптимизации успешно загружены в Altawin!\n\n"
-                    f"Сменное задание: {self.current_grorderid}\n"
-                    f"Загружено листов: {len(optimization_data)}\n"
-                    f"Общая эффективность: {self.optimization_result.total_efficiency:.1f}%"
+                    success_message
                 )
             else:
                 error_msg = result.get('message', 'Неизвестная ошибка')
@@ -2137,13 +2203,16 @@ class OptimizerWindow(QWidget):
             )
         
         finally:
-            # Восстанавливаем кнопку
+            # Восстанавливаем кнопку и галочку
             self.upload_to_altawin_button.setEnabled(True)
             self.upload_to_altawin_button.setText("📤 Загрузить данные оптимизации в Altawin")
+            self.adjust_materials_checkbox.setEnabled(True)
     
     def _prepare_optimization_data_for_upload(self):
         """Подготовка данных оптимизации для загрузки в Altawin"""
         optimization_data = []
+        
+        print(f"🔧 CLIENT: Начинаем подготовку данных для загрузки. Количество листов: {len(self.optimization_result.sheets)}")
         
         for sheet_index, sheet_layout in enumerate(self.optimization_result.sheets):
             # Создаем XML данные
@@ -2151,10 +2220,56 @@ class OptimizerWindow(QWidget):
             
             print(f"📄 XML для листа {sheet_index + 1}: {len(xml_data)} символов, кодировка UTF-8")
             
+            # Получаем goodsid для листа
+            goodsid = self._extract_goodsid_from_sheet(sheet_layout)
+            
+            # Получаем amfactor для товара
+            amfactor = self._get_amfactor_for_goodsid(goodsid)
+            
+            # Рассчитываем qty: количество листов (для OPTDATA)
+            qty = 1  # Количество листов
+            
+            print(f"🔧 Лист {sheet_index + 1}: goodsid={goodsid}, amfactor={amfactor}")
+            print(f"🔧 Лист {sheet_index + 1}: qty={qty} (листов)")
+            print(f"🔧 Лист {sheet_index + 1}: is_remainder={sheet_layout.sheet.is_remainder}, материал={sheet_layout.sheet.material}")
+            
+            # Подсчитываем деловые остатки на этом листе
+            remnants_on_sheet = [item for item in sheet_layout.placed_items if item.item_type == "remnant"]
+            print(f"🔧 Лист {sheet_index + 1}: найдено {len(remnants_on_sheet)} деловых остатков")
+            for i, remnant in enumerate(remnants_on_sheet):
+                print(f"   - Остаток {i+1}: {remnant.width:.0f}x{remnant.height:.0f}")
+            
+            # Собираем данные о полученных деловых остатках (free_rectangles)
+            free_rectangles_data = []
+            if hasattr(sheet_layout, 'free_rectangles') and sheet_layout.free_rectangles:
+                min_width = self.min_remnant_width.value() if hasattr(self, 'min_remnant_width') else 180
+                min_height = self.min_remnant_height.value() if hasattr(self, 'min_remnant_height') else 100
+                
+                for rect in sheet_layout.free_rectangles:
+                    try:
+                        if hasattr(rect, 'width') and hasattr(rect, 'height'):
+                            # Используем ту же логику что и в таблице остатков
+                            element_min_side = min(rect.width, rect.height)
+                            element_max_side = max(rect.width, rect.height)
+                            param_min = min(min_width, min_height)
+                            param_max = max(min_width, min_height)
+                            
+                            if element_min_side >= param_min and element_max_side >= param_max:
+                                free_rectangles_data.append({
+                                    'width': int(rect.width),
+                                    'height': int(rect.height),
+                                    'area': int(rect.width * rect.height)
+                                })
+                    except Exception as e:
+                        print(f"⚠️ Ошибка обработки free_rectangle: {e}")
+                        continue
+            
+            print(f"🔧 Лист {sheet_index + 1}: найдено {len(free_rectangles_data)} полезных деловых остатков")
+            
             # Собираем данные о листе
             sheet_data = {
                 'num_glass': sheet_index + 1,  # Порядковый номер листа
-                'goodsid': self._extract_goodsid_from_sheet(sheet_layout),
+                'goodsid': goodsid,
                 'width': int(sheet_layout.sheet.width),
                 'height': int(sheet_layout.sheet.height),
                 'trash_area': int(sheet_layout.waste_area),
@@ -2162,13 +2277,30 @@ class OptimizerWindow(QWidget):
                 'percent_waste': round(sheet_layout.waste_percent, 6),
                 'piece_count': len(sheet_layout.placed_details),
                 'sum_area': int(sheet_layout.used_area),
-                'qty': 1,  # Количество листов (всегда 1)
-                'is_remainder': -1 if sheet_layout.sheet.is_remainder else 0,
+                'qty': qty,  # Количество листов (для OPTDATA)
+                'amfactor': amfactor,  # amfactor как отдельный параметр
+                'is_remainder': 1 if sheet_layout.sheet.is_remainder else 0,
+                'free_rectangles': free_rectangles_data,  # Данные о полученных деловых остатках
                 'xml_data': xml_data  # XML данные в правильной кодировке UTF-8
             }
             
-            optimization_data.append(sheet_data)
+            print(f"📋 Клиент: Подготовлен лист {sheet_index + 1}:")
+            print(f"   - goodsid: {goodsid}")
+            print(f"   - is_remainder: {sheet_data['is_remainder']}")
+            print(f"   - размеры: {sheet_data['width']}x{sheet_data['height']}")
+            print(f"   - qty: {qty} (листов)")
+            print(f"   - amfactor: {amfactor}")
+            print(f"   - материал: {sheet_layout.sheet.material}")
+            print(f"   - деловых остатков на листе: {len(remnants_on_sheet)}")
             
+            optimization_data.append(sheet_data)
+        
+        # Итоговая статистика
+        total_remainder_sheets = sum(1 for sheet in optimization_data if sheet['is_remainder'] == 1)
+        print(f"📊 CLIENT: Итоги подготовки данных:")
+        print(f"   - Всего листов: {len(optimization_data)}")
+        print(f"   - Листов с деловыми остатками: {total_remainder_sheets}")
+        
         return optimization_data
     
     def _extract_goodsid_from_sheet(self, sheet_layout):
@@ -2221,6 +2353,32 @@ class OptimizerWindow(QWidget):
         error_msg = f"❌ КРИТИЧЕСКАЯ ОШИБКА: Не удалось найти goodsid для материала '{material_marking}'"
         print(error_msg)
         raise ValueError(error_msg)
+    
+    def _get_amfactor_for_goodsid(self, goodsid):
+        """Получить amfactor для товара из загруженных данных"""
+        if not goodsid:
+            print(f"⚠️ goodsid не указан, используем amfactor=1.0")
+            return 1.0
+        
+        # Ищем amfactor в материалах
+        if hasattr(self, 'current_materials') and self.current_materials:
+            for material in self.current_materials:
+                if material.get('goodsid') == goodsid:
+                    amfactor = material.get('amfactor', 1.0)
+                    print(f"✅ Найден amfactor в материалах: goodsid={goodsid}, amfactor={amfactor}")
+                    return float(amfactor)
+        
+        # Ищем amfactor в остатках
+        if hasattr(self, 'current_remainders') and self.current_remainders:
+            for remainder in self.current_remainders:
+                if remainder.get('goodsid') == goodsid:
+                    amfactor = remainder.get('amfactor', 1.0)
+                    print(f"✅ Найден amfactor в остатках: goodsid={goodsid}, amfactor={amfactor}")
+                    return float(amfactor)
+        
+        # Если amfactor не найден, используем значение по умолчанию
+        print(f"⚠️ amfactor не найден для goodsid={goodsid}, используем 1.0")
+        return 1.0
     
     def _create_cutting_xml(self, sheet_layout, sheet_num):
         """Создание XML файла раскроя в UTF-8 кодировке"""
