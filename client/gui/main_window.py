@@ -2221,6 +2221,9 @@ class OptimizerWindow(QWidget):
             # Создаем XML данные
             xml_data = self._create_cutting_xml(sheet_layout, sheet_index + 1)
             
+            # Исправляем логику размеров в XML (на случай если есть старые ошибки)
+            xml_data = self.fix_xml_dimensions_logic(xml_data)
+            
             print(f"📄 XML для листа {sheet_index + 1}: {len(xml_data)} символов, кодировка UTF-8")
             
             # Получаем goodsid для листа
@@ -2439,17 +2442,12 @@ class OptimizerWindow(QWidget):
             piece = SubElement(pieces, "piece")
             piece.set("num", str(i))
             
-            # Используем исходные размеры детали (НЕ повернутые!)
-            if placed_detail.is_rotated:
-                # Если деталь повернута, меняем местами размеры
-                piece.set("width", str(int(placed_detail.detail.height)))
-                piece.set("height", str(int(placed_detail.detail.width)))
-            else:
-                # Если деталь не повернута, используем исходные размеры
-                piece.set("width", str(int(placed_detail.detail.width)))
-                piece.set("height", str(int(placed_detail.detail.height)))
+            # ВСЕГДА используем исходные размеры детали (физические размеры)
+            # height и width должны быть постоянными для одной детали
+            piece.set("width", str(int(placed_detail.detail.width)))
+            piece.set("height", str(int(placed_detail.detail.height)))
             
-            # direction зависит от поворота детали
+            # direction указывает на поворот детали (0 = нормальная, 1 = повернутая)
             direction_value = "1" if placed_detail.is_rotated else "0"
             piece.set("direction", direction_value)
             
@@ -2500,11 +2498,12 @@ class OptimizerWindow(QWidget):
             piece_map.set("x", str(int(placed_detail.x)))
             piece_map.set("y", str(int(placed_detail.y)))
             
-            # rotate всегда 0 (не повернуты в map)
-            piece_map.set("rotate", "0")
+            # rotate указывает поворот: 0 = не повернута, 1 = повернута на 90°
+            rotate_value = "1" if placed_detail.is_rotated else "0"
+            piece_map.set("rotate", rotate_value)
             
-            print(f"📄 XML piece {i}: размеры {int(placed_detail.width)}x{int(placed_detail.height)}, "
-                  f"direction={direction_value}, rotate=0 (direction зависит от поворота, rotate всегда 0)")
+            print(f"📄 XML piece {i}: размеры {int(placed_detail.detail.width)}x{int(placed_detail.detail.height)}, "
+                  f"direction={direction_value}, rotate={rotate_value} (direction=1 если повернута, rotate=1 если повернута)")
         
         # Добавляем резы (используем уже сгенерированные)
         self._add_cuts_to_xml_with_cuts(map_elem, cuts)
@@ -2592,6 +2591,69 @@ class OptimizerWindow(QWidget):
             # В случае ошибки возвращаем исходный ANSI XML
             return final_xml_ansi
 
+    def fix_xml_dimensions_logic(self, xml_content):
+        """
+        Исправляет логику размеров в XML файле.
+        
+        Проблема: детали с direction="1" имели поменянные местами height и width.
+        Исправление: height и width должны быть постоянными, а direction указывает на поворот.
+        
+        Args:
+            xml_content (str): Исходный XML контент
+            
+        Returns:
+            str: Исправленный XML контент
+        """
+        import re
+        
+        print("🔧 Исправление логики размеров в XML...")
+        
+        # Паттерн для поиска piece элементов
+        piece_pattern = r'<piece height="(\d+)" width="(\d+)" direction="(\d+)" num="(\d+)">'
+        
+        def fix_piece_dimensions(match):
+            height = int(match.group(1))
+            width = int(match.group(2))
+            direction = match.group(3)
+            num = match.group(4)
+            
+            # Если direction="1" и размеры поменяны местами, исправляем
+            if direction == "1" and height < width:
+                # Меняем местами height и width
+                new_height = width
+                new_width = height
+                print(f"🔧 Исправляем piece {num}: {height}x{width} -> {new_height}x{new_width} (direction=1)")
+                return f'<piece height="{new_height}" width="{new_width}" direction="{direction}" num="{num}">'
+            else:
+                # Размеры уже правильные
+                return match.group(0)
+        
+        # Исправляем размеры в piece элементах
+        fixed_xml = re.sub(piece_pattern, fix_piece_dimensions, xml_content)
+        
+        # Также исправляем rotate в map секции для деталей с direction="1"
+        map_pattern = r'<piece num="(\d+)" rotate="0" y="(\d+)" x="(\d+)" />'
+        
+        def fix_map_rotation(match):
+            num = int(match.group(1))
+            y = match.group(2)
+            x = match.group(3)
+            
+            # Ищем соответствующую деталь в pieces секции
+            piece_match = re.search(rf'<piece[^>]*num="{num}"[^>]*direction="(\d+)"', fixed_xml)
+            if piece_match and piece_match.group(1) == "1":
+                # Если direction="1", то rotate должен быть "1"
+                print(f"🔧 Исправляем rotate для piece {num}: 0 -> 1 (direction=1)")
+                return f'<piece num="{num}" rotate="1" y="{y}" x="{x}" />'
+            else:
+                # rotate остается "0"
+                return match.group(0)
+        
+        # Исправляем rotate в map секции
+        fixed_xml = re.sub(map_pattern, fix_map_rotation, fixed_xml)
+        
+        print("✅ Логика размеров в XML исправлена")
+        return fixed_xml
 
     def _generate_guillotine_cuts(self, sheet_layout):
         """
