@@ -1017,7 +1017,8 @@ class OptimizerWindow(QWidget):
         """)
         self.upload_to_altawin_button.clicked.connect(self.on_upload_to_altawin)
         self.upload_to_altawin_button.setEnabled(False)  # Изначально отключена
-        self.adjust_materials_checkbox.setEnabled(False)  # Изначально отключена
+        self.adjust_materials_checkbox.setChecked(True)  # По умолчанию отмечен
+        self.adjust_materials_checkbox.setEnabled(True)  # По умолчанию активен
         self.upload_to_altawin_button.setToolTip("Загрузить результаты оптимизации обратно в базу данных Altawin")
         
         upload_layout.addWidget(self.upload_to_altawin_button)
@@ -1906,10 +1907,12 @@ class OptimizerWindow(QWidget):
         # Активируем кнопку загрузки в Altawin если есть grorderid
         if hasattr(self, 'current_grorderid') and self.current_grorderid:
             self.upload_to_altawin_button.setEnabled(True)
-            self.adjust_materials_checkbox.setEnabled(True)
             print(f"✅ Кнопка загрузки в Altawin активирована для grorderid={self.current_grorderid}")
         else:
             print(f"⚠️ Кнопка загрузки в Altawin не активирована - отсутствует grorderid")
+        
+        # Чекбокс корректировки материалов всегда остается активным после оптимизации
+        self.adjust_materials_checkbox.setEnabled(True)
         
         # Переключаемся на вкладку результатов
         self.tabs.setCurrentIndex(1)

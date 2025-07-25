@@ -1,14 +1,14 @@
 from fastapi import FastAPI
 from dotenv import load_dotenv
 import uvicorn
-from routes import router
+from modules.routes import router
 from pydantic import BaseModel
 from typing import List, Optional
 from fastapi import HTTPException
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import time
-from config import API_TIMEOUT, ENABLE_DETAILED_LOGGING
+from modules.config import API_TIMEOUT, ENABLE_DETAILED_LOGGING
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -67,7 +67,7 @@ async def upload_optimization(request: OptimizationUploadRequest):
                 if sheet.free_rectangles:
                     print(f"     Получено деловых остатков: {len(sheet.free_rectangles)}")
         
-        from db_functions import upload_optimization_to_db
+        from utils.db_functions import upload_optimization_to_db
         
         loop = asyncio.get_running_loop()
         
@@ -132,4 +132,6 @@ async def upload_optimization(request: OptimizationUploadRequest):
         raise HTTPException(status_code=500, detail=error_msg)
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.freeze_support()
     uvicorn.run(app, host="0.0.0.0", port=8000)

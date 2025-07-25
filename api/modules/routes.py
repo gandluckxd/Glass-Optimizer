@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from models import DetailsRawRequest, WarehouseRemainderRequest, WarehouseMainMaterialRequest
-from db_functions import get_tables, get_details_raw, get_warehouse_remainders, get_warehouse_main_material, get_goods_price
+from modules.models import DetailsRawRequest, WarehouseRemainderRequest, WarehouseMainMaterialRequest
+from utils.db_functions import get_tables, get_details_raw, get_warehouse_remainders, get_warehouse_main_material, get_goods_price
 import asyncio
 import time
 

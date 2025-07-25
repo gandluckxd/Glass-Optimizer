@@ -1,7 +1,7 @@
 import fdb
 from fastapi import HTTPException
 import time
-from config import DB_CONFIG, MAX_POOL_SIZE, CONNECTION_TIMEOUT, DB_OPERATION_TIMEOUT, LOG_DB_OPERATIONS
+from modules.config import DB_CONFIG, MAX_POOL_SIZE, CONNECTION_TIMEOUT, DB_OPERATION_TIMEOUT, LOG_DB_OPERATIONS
 import os
 
 # Глобальные настройки для улучшения производительности
