@@ -761,6 +761,9 @@ def optimize(details: List[dict], materials: List[dict], remainders: List[dict],
         for material_data in materials:
             try:
                 qty = int(material_data.get('res_qty', material_data.get('quantity', 1)))
+                if qty <= 0:
+                    logger.warning(f"⚠️ Пропускаем материал с некорректным количеством: qty={qty}")
+                    continue
                 if qty > 1000:
                     qty = 1000
                 
@@ -793,19 +796,34 @@ def optimize(details: List[dict], materials: List[dict], remainders: List[dict],
                 if goodsid:
                     goodsid = int(goodsid)
                 
-                sheet = Sheet(
-                    id=f"remainder_{remainder_data.get('id', len(sheets))}",
-                    width=float(remainder_data.get('width', 0)),
-                    height=float(remainder_data.get('height', 0)),
-                    material=str(remainder_data.get('g_marking', '')),
-                    cost_per_unit=float(remainder_data.get('cost', 0)),
-                    is_remainder=True,
-                    remainder_id=str(remainder_data.get('id', '')),
-                    goodsid=goodsid  # Передаем goodsid в остаток
-                )
-                if sheet.width > 0 and sheet.height > 0 and sheet.material:
-                    sheets.append(sheet)
-                    logger.info(f"📄 Создан остаток: {sheet.material}, goodsid={goodsid}")
+                # Получаем количество штук остатка
+                qty = int(remainder_data.get('qty', 1))
+                if qty <= 0:
+                    logger.warning(f"⚠️ Пропускаем остаток с некорректным количеством: qty={qty}")
+                    continue
+                if qty > 1000:  # Защита от слишком больших значений
+                    logger.warning(f"⚠️ Ограничение количества остатков с {qty} до 1000")
+                    qty = 1000
+                
+                logger.info(f"📄 Обработка остатка: материал={remainder_data.get('g_marking', '')}, "
+                           f"размер={remainder_data.get('width', 0)}x{remainder_data.get('height', 0)}, "
+                           f"количество={qty}")
+                
+                # Создаем листы по количеству остатков
+                for j in range(qty):
+                    sheet = Sheet(
+                        id=f"remainder_{remainder_data.get('id', len(sheets))}_{j+1}",
+                        width=float(remainder_data.get('width', 0)),
+                        height=float(remainder_data.get('height', 0)),
+                        material=str(remainder_data.get('g_marking', '')),
+                        cost_per_unit=float(remainder_data.get('cost', 0)),
+                        is_remainder=True,
+                        remainder_id=str(remainder_data.get('id', '')),
+                        goodsid=goodsid  # Передаем goodsid в остаток
+                    )
+                    if sheet.width > 0 and sheet.height > 0 and sheet.material:
+                        sheets.append(sheet)
+                        logger.info(f"📄 Создан остаток {j+1}/{qty}: {sheet.material}, goodsid={goodsid}")
             except Exception as e:
                 logger.error(f"Ошибка обработки остатка: {e}")
         
