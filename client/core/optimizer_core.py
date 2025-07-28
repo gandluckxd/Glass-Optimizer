@@ -665,6 +665,32 @@ class GuillotineOptimizer:
                 message="Не удалось разместить ни одной детали"
             )
         
+        # Сортируем листы: сначала деловые остатки, потом полноразмерные материалы
+        # Внутри каждой группы сортируем по артикулу и размеру (от меньшего к большему)
+        layouts.sort(key=lambda layout: (
+            not layout.sheet.is_remainder,  # Остатки первыми (False < True)
+            layout.sheet.material,          # По артикулу материала
+            layout.sheet.area,              # По площади (от меньшей к большей)
+            min(layout.sheet.width, layout.sheet.height),  # По минимальной стороне
+            layout.sheet.id                 # По ID для стабильности
+        ))
+        # Подробное логирование сортировки
+        remainder_count = len([l for l in layouts if l.sheet.is_remainder])
+        material_count = len([l for l in layouts if not l.sheet.is_remainder])
+        
+        logger.info(f"📊 Отсортированы листы: {remainder_count} из остатков, {material_count} из полноразмерных материалов")
+        
+        # Группируем по материалам для логирования
+        from collections import defaultdict
+        material_groups = defaultdict(list)
+        for layout in layouts:
+            key = f"{'Остаток' if layout.sheet.is_remainder else 'Материал'} {layout.sheet.material}"
+            material_groups[key].append(layout)
+        
+        for material_key, group_layouts in material_groups.items():
+            sizes = [f"{int(l.sheet.width)}x{int(l.sheet.height)}" for l in group_layouts]
+            logger.info(f"  📋 {material_key}: {len(group_layouts)} листов, размеры: {', '.join(sizes)}")
+        
         # Общая статистика
         total_area = sum(layout.total_area for layout in layouts)
         total_used = sum(layout.used_area for layout in layouts)
