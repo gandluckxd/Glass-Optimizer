@@ -22,6 +22,7 @@ class SettingsManager:
             'min_remnant_width': 180,
             'min_remnant_height': 100,
             'target_waste_percent': 5,
+            'remainder_waste_percent': 20,
             'min_cut_size': 10,
             'use_remainders': True,
             'allow_rotation': True

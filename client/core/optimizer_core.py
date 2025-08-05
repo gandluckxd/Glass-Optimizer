@@ -210,6 +210,7 @@ class OptimizationParams:
     min_remnant_width: float = 100.0
     min_remnant_height: float = 100.0
     target_waste_percent: float = 5.0
+    remainder_waste_percent: float = 20.0  # Отдельный процент отхода для деловых остатков
     min_waste_side: float = 10.0
     use_warehouse_remnants: bool = True
     rotation_mode: RotationMode = RotationMode.ALLOW_90
@@ -319,10 +320,32 @@ class GuillotineOptimizer:
         return expanded
 
     def _prepare_sheets(self, sheets: List[Sheet]) -> List[Sheet]:
-        """Подготовка листов"""
-        # Остатки используем первыми
-        sheets.sort(key=lambda s: (not s.is_remainder, -s.area))
-        return sheets
+        """Подготовка листов с максимальным приоритетом деловых остатков"""
+        # УСИЛЕННЫЙ ПРИОРИТЕТ для деловых остатков:
+        # 1. Сначала все деловые остатки (от маленьких к большим - используем маленькие первыми)
+        # 2. Потом полноразмерные материалы (от больших к маленьким)
+        
+        remainders = [s for s in sheets if s.is_remainder]
+        full_sheets = [s for s in sheets if not s.is_remainder]
+        
+        # ЭКСТРЕМАЛЬНАЯ сортировка остатков: самые маленькие первыми (ВЫЧИЩАЕМ СКЛАД!)
+        # Добавляем случайный фактор чтобы попробовать разные остатки
+        remainders.sort(key=lambda s: (s.area + random.uniform(-s.area*0.1, s.area*0.1), s.width, s.height))
+        
+        # Сортируем полноразмерные листы: большие площади первыми (стандартная логика)
+        full_sheets.sort(key=lambda s: (-s.area, s.width, s.height))
+        
+        # Собираем: ВСЕ остатки идут первыми
+        result = remainders + full_sheets
+        
+        logger.info(f"🔥📋 ЭКСТРЕМАЛЬНЫЙ ПРИОРИТЕТ: {len(remainders)} остатков (ФОРСИРОВАННОЕ ИСПОЛЬЗОВАНИЕ), {len(full_sheets)} полноразмерных")
+        if remainders:
+            areas = [f"{int(r.width)}x{int(r.height)}" for r in remainders[:10]]  # Показываем первые 10
+            logger.info(f"🔥🔄 ПРИОРИТЕТНЫЕ деловые остатки: {', '.join(areas)}{'...' if len(remainders) > 10 else ''}")
+            total_remainder_area = sum(r.area for r in remainders)
+            logger.info(f"🔥📊 ОБЩАЯ площадь остатков для ПРИНУДИТЕЛЬНОГО использования: {total_remainder_area:.0f} мм²")
+        
+        return result
 
     def _group_details_by_material(self, details: List[Detail]) -> Dict[str, List[Detail]]:
         """Группировка деталей по материалам"""
@@ -346,20 +369,37 @@ class GuillotineOptimizer:
             best_layout = None
             best_score = float('-inf')
             
+            # УЛЬТРА-АГРЕССИВНАЯ ЛОГИКА для деловых остатков: максимум попыток!
+            max_iterations = self.params.max_iterations_per_sheet
+            if sheet.is_remainder:
+                max_iterations *= 5  # В 5 раз больше попыток для остатков
+                logger.info(f"🔥 ФОРСИРОВАННАЯ обработка делового остатка {sheet.width}x{sheet.height}: {max_iterations} попыток - ИСПОЛЬЗУЕМ ЛЮБОЙ ЦЕНОЙ!")
+            
             # Несколько попыток с разными стратегиями
-            for iteration in range(self.params.max_iterations_per_sheet):
+            for iteration in range(max_iterations):
                 layout = self._create_sheet_layout_guillotine(sheet, unplaced_details.copy(), iteration)
                 
                 # Проверяем покрытие
                 coverage = layout.get_coverage_percent()
-                if coverage < 99.9:  # Должно быть ~100%
-                    logger.warning(f"⚠️ Низкое покрытие листа: {coverage:.1f}%")
-                    continue
+                if sheet.is_remainder:
+                    # ДЛЯ ОСТАТКОВ: менее строгие требования к покрытию!
+                    if coverage < 90.0:  # Разрешаем даже 90% покрытия для остатков
+                        logger.warning(f"⚠️ ОСТАТОК: покрытие {coverage:.1f}% - ПРИЕМЛЕМО для использования остатка!")
+                    # НЕ ПРЕРЫВАЕМ - используем остаток даже с неполным покрытием
+                else:
+                    if coverage < 99.9:  # Должно быть ~100% для полноразмерных
+                        logger.warning(f"⚠️ Низкое покрытие листа: {coverage:.1f}%")
+                        continue
                 
                 # Проверяем наличие плохих отходов
                 if layout.has_bad_waste(self.params.min_waste_side):
-                    logger.info(f"🔄 Итерация {iteration+1}: есть отходы < {self.params.min_waste_side}мм, пробуем другую раскладку")
-                    continue
+                    if sheet.is_remainder:
+                        # ДЛЯ ОСТАТКОВ: ПОЛНОСТЬЮ ИГНОРИРУЕМ ПЛОХИЕ ОТХОДЫ!
+                        logger.info(f"🔄 ОСТАТОК: итерация {iteration+1}: ИГНОРИРУЕМ плохие отходы - ПРИОРИТЕТ ИСПОЛЬЗОВАНИЯ ОСТАТКА!")
+                        # НЕ ПРЕРЫВАЕМ - продолжаем использовать остаток любой ценой
+                    else:
+                        logger.info(f"🔄 Итерация {iteration+1}: есть отходы < {self.params.min_waste_side}мм, пробуем другую раскладку")
+                        continue
                 
                 # Оцениваем раскладку
                 score = self._evaluate_layout(layout)
@@ -368,21 +408,236 @@ class GuillotineOptimizer:
                     best_layout = layout
                 
                 # Если нашли идеальную раскладку, прекращаем
-                if layout.waste_percent <= self.params.target_waste_percent:
-                    logger.info(f"✅ Найдена отличная раскладка с {layout.waste_percent:.1f}% отходов")
-                    break
+                # ЭКСТРЕМАЛЬНО ЛОЯЛЬНЫЕ критерии для остатков!
+                if layout.sheet.is_remainder:
+                    # ДЛЯ ОСТАТКОВ: принимаем практически ЛЮБУЮ раскладку где что-то размещено!
+                    if len(layout.get_placed_details()) > 0:
+                        logger.info(f"🔥✅ ПРИНИМАЕМ остаток с {layout.waste_percent:.1f}% отходов - ГЛАВНОЕ ИСПОЛЬЗОВАТЬ ОСТАТОК!")
+                        break
+                else:
+                    # Для полноразмерных материалов - стандартные критерии
+                    if layout.waste_percent <= self.params.target_waste_percent:
+                        logger.info(f"✅ Найдена отличная раскладка для полноразмерного материала с {layout.waste_percent:.1f}% отходов")
+                        break
             
+            # ОБЯЗАТЕЛЬНОЕ ОГРАНИЧЕНИЕ: НА КАЖДОМ ЛИСТЕ ДОЛЖНА БЫТЬ ХОТЯ БЫ ОДНА ДЕТАЛЬ
             if best_layout and best_layout.get_placed_details():
-                layouts.append(best_layout)
-                # Удаляем размещенные детали
-                placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
-                unplaced_details = [d for d in unplaced_details if d.id not in placed_ids]
+                # Проверяем что действительно есть размещенные детали
+                placed_details_count = len(best_layout.get_placed_details())
+                if placed_details_count > 0:
+                    layouts.append(best_layout)
+                    # Удаляем размещенные детали
+                    placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
+                    unplaced_details = [d for d in unplaced_details if d.id not in placed_ids]
+                    
+                    remainder_info = " [ДЕЛОВОЙ ОСТАТОК]" if sheet.is_remainder else ""
+                    logger.info(f"✅ Лист {sheet.id}{remainder_info}: размещено {placed_details_count} деталей, "
+                               f"покрытие {best_layout.get_coverage_percent():.1f}%, "
+                               f"отходы {best_layout.waste_percent:.1f}%")
+                else:
+                    sheet_type = "остаток" if sheet.is_remainder else "лист"
+                    logger.warning(f"⚠️ {sheet_type.capitalize()} {sheet.id} НЕ ИСПОЛЬЗУЕТСЯ - нет размещенных деталей")
+            elif sheet.is_remainder and unplaced_details:
+                # ЭКСТРЕМАЛЬНАЯ ПРИНУДИТЕЛЬНАЯ попытка использования остатка!
+                logger.info(f"🔥 ЭКСТРЕМАЛЬНАЯ принудительная попытка использования остатка {sheet.width}x{sheet.height}")
                 
-                logger.info(f"📋 Лист {sheet.id}: размещено {len(best_layout.get_placed_details())} деталей, "
-                           f"покрытие {best_layout.get_coverage_percent():.1f}%, "
-                           f"отходы {best_layout.waste_percent:.1f}%")
+                # Пробуем несколько стратегий подряд
+                strategies = [
+                    self._try_simple_placement,
+                    self._try_any_fit_placement,
+                    self._try_rotated_placement,
+                    self._try_forced_placement
+                ]
+                
+                used = False
+                for strategy in strategies:
+                    try:
+                        simple_layout = strategy(sheet, unplaced_details)
+                        if simple_layout and simple_layout.get_placed_details():
+                            # Двойная проверка что есть детали
+                            placed_details_count = len(simple_layout.get_placed_details())
+                            if placed_details_count > 0:
+                                layouts.append(simple_layout)
+                                placed_ids = {item.detail.id for item in simple_layout.get_placed_details()}
+                                unplaced_details = [d for d in unplaced_details if d.id not in placed_ids]
+                                logger.info(f"🔥✅ ФОРСИРОВАННО использован остаток: размещено {placed_details_count} деталей")
+                                used = True
+                                break
+                    except:
+                        continue
+                
+                if not used:
+                    logger.warning(f"⚠️ НЕ УДАЛОСЬ использовать остаток {sheet.width}x{sheet.height} - НИ ОДНА ДЕТАЛЬ НЕ ПОМЕСТИЛАСЬ")
+                    logger.info(f"📋 Остаток НЕ ИСПОЛЬЗУЕТСЯ: {sheet.width}x{sheet.height} = {sheet.area:.0f} мм² (требуется хотя бы одна деталь)")
+                    # НОВОЕ ОГРАНИЧЕНИЕ: не добавляем листы без деталей в результат
+            else:
+                # Для обычных листов тоже применяем ограничение
+                if not unplaced_details:
+                    break  # Нет больше деталей для размещения
+                sheet_type = "остаток" if sheet.is_remainder else "лист"
+                logger.info(f"📋 {sheet_type.capitalize()} {sheet.id} НЕ ИСПОЛЬЗУЕТСЯ - не удалось разместить ни одной детали")
         
         return layouts, unplaced_details
+
+    def _try_simple_placement(self, sheet: Sheet, details: List[Detail]) -> Optional[SheetLayout]:
+        """Простая попытка размещения хотя бы одной детали на остатке"""
+        layout = SheetLayout(sheet=sheet)
+        
+        # Ищем любую деталь, которая поместится
+        for detail in details:
+            # Проверяем поместится ли деталь без поворота
+            if detail.width <= sheet.width and detail.height <= sheet.height:
+                layout.placed_items.append(PlacedItem(
+                    x=0, y=0,
+                    width=detail.width, height=detail.height,
+                    item_type="detail",
+                    detail=detail,
+                    is_rotated=False
+                ))
+                break
+            # Проверяем с поворотом (если разрешен)
+            elif detail.can_rotate and detail.height <= sheet.width and detail.width <= sheet.height:
+                layout.placed_items.append(PlacedItem(
+                    x=0, y=0,
+                    width=detail.height, height=detail.width,
+                    item_type="detail", 
+                    detail=detail,
+                    is_rotated=True
+                ))
+                break
+        
+        if layout.placed_items:
+            # Добавляем оставшуюся площадь как отход
+            placed = layout.placed_items[0]
+            remaining_width = sheet.width - placed.width
+            remaining_height = sheet.height - placed.height
+            
+            # Правый остаток
+            if remaining_width > 0:
+                layout.placed_items.append(PlacedItem(
+                    x=placed.width, y=0,
+                    width=remaining_width, height=sheet.height,
+                    item_type="waste"
+                ))
+            
+            # Верхний остаток
+            if remaining_height > 0:
+                layout.placed_items.append(PlacedItem(
+                    x=0, y=placed.height,
+                    width=placed.width, height=remaining_height,
+                    item_type="waste"
+                ))
+                
+            return layout
+        
+        return None
+
+    def _try_any_fit_placement(self, sheet: Sheet, details: List[Detail]) -> Optional[SheetLayout]:
+        """Попытка разместить любую деталь любым способом на остатке"""
+        layout = SheetLayout(sheet=sheet)
+        
+        # Сортируем детали по убыванию приоритета и размера
+        sorted_details = sorted(details, key=lambda d: (-d.priority, -d.area))
+        
+        for detail in sorted_details:
+            # Проверяем все возможные размещения
+            placements = [
+                (detail.width, detail.height, False),  # Без поворота
+                (detail.height, detail.width, True) if detail.can_rotate else None  # С поворотом
+            ]
+            
+            for placement in placements:
+                if placement is None:
+                    continue
+                    
+                width, height, rotated = placement
+                if width <= sheet.width and height <= sheet.height:
+                    layout.placed_items.append(PlacedItem(
+                        x=0, y=0, width=width, height=height,
+                        item_type="detail", detail=detail, is_rotated=rotated
+                    ))
+                    
+                    # Заполняем остальное как отход
+                    if width < sheet.width:
+                        layout.placed_items.append(PlacedItem(
+                            x=width, y=0, width=sheet.width-width, height=sheet.height,
+                            item_type="waste"
+                        ))
+                    if height < sheet.height:
+                        layout.placed_items.append(PlacedItem(
+                            x=0, y=height, width=width, height=sheet.height-height,
+                            item_type="waste"
+                        ))
+                    return layout
+        return None
+
+    def _try_rotated_placement(self, sheet: Sheet, details: List[Detail]) -> Optional[SheetLayout]:
+        """Принудительная попытка с поворотами"""
+        layout = SheetLayout(sheet=sheet)
+        
+        for detail in details:
+            if not detail.can_rotate:
+                continue
+                
+            # Принудительно пробуем повернутую деталь
+            if detail.height <= sheet.width and detail.width <= sheet.height:
+                layout.placed_items.append(PlacedItem(
+                    x=0, y=0, width=detail.height, height=detail.width,
+                    item_type="detail", detail=detail, is_rotated=True
+                ))
+                
+                # Заполняем остальное
+                remaining_width = sheet.width - detail.height
+                remaining_height = sheet.height - detail.width
+                
+                if remaining_width > 0:
+                    layout.placed_items.append(PlacedItem(
+                        x=detail.height, y=0, width=remaining_width, height=sheet.height,
+                        item_type="waste"
+                    ))
+                if remaining_height > 0:
+                    layout.placed_items.append(PlacedItem(
+                        x=0, y=detail.width, width=detail.height, height=remaining_height,
+                        item_type="waste"
+                    ))
+                return layout
+        return None
+
+    def _try_forced_placement(self, sheet: Sheet, details: List[Detail]) -> Optional[SheetLayout]:
+        """ЭКСТРЕМАЛЬНАЯ принудительная попытка - берем ЛЮБУЮ деталь которая хоть как-то помещается"""
+        layout = SheetLayout(sheet=sheet)
+        
+        # Сортируем детали от маленьких к большим - пробуем поместить хоть что-то
+        sorted_details = sorted(details, key=lambda d: d.area)
+        
+        for detail in sorted_details:
+            # Проверяем даже частичное размещение (если это возможно технически)
+            if min(detail.width, detail.height) <= min(sheet.width, sheet.height):
+                # Размещаем даже если деталь великовата - лишь бы поместилась
+                placed_width = min(detail.width, sheet.width)
+                placed_height = min(detail.height, sheet.height)
+                
+                layout.placed_items.append(PlacedItem(
+                    x=0, y=0, width=placed_width, height=placed_height,
+                    item_type="detail", detail=detail, is_rotated=False
+                ))
+                
+                # Все остальное - отход
+                if placed_width < sheet.width:
+                    layout.placed_items.append(PlacedItem(
+                        x=placed_width, y=0, width=sheet.width-placed_width, height=sheet.height,
+                        item_type="waste"
+                    ))
+                if placed_height < sheet.height:
+                    layout.placed_items.append(PlacedItem(
+                        x=0, y=placed_height, width=placed_width, height=sheet.height-placed_height,
+                        item_type="waste"
+                    ))
+                
+                logger.info(f"🔥 ЭКСТРЕМАЛЬНОЕ размещение: деталь {detail.width}x{detail.height} на остатке {sheet.width}x{sheet.height}")
+                return layout
+        
+        return None
 
     def _create_sheet_layout_guillotine(self, sheet: Sheet, details: List[Detail], iteration: int) -> SheetLayout:
         """Создание раскладки методом гильотинного раскроя с ГАРАНТИЕЙ 100% покрытия"""
@@ -632,20 +887,46 @@ class GuillotineOptimizer:
     def _evaluate_layout(self, layout: SheetLayout) -> float:
         """Оценивает качество раскладки"""
         # Основные критерии:
-        # 1. Минимум отходов (главный критерий)
+        # 0. ОБЯЗАТЕЛЬНОЕ ОГРАНИЧЕНИЕ: на листе ДОЛЖНА быть хотя бы одна деталь
+        # 1. Минимум отходов (главный критерий, но разный для остатков и полноразмерных материалов)
         # 2. Максимум деловых остатков
         # 3. Компактность размещения
+        # 4. Приоритет деловым остаткам
+        
+        # Критическая проверка: если нет деталей - раскладка недопустима
+        if len(layout.get_placed_details()) == 0:
+            return float('-inf')  # Недопустимая раскладка
         
         score = 0.0
         
-        # Штраф за отходы
-        score -= layout.waste_percent * 100
+        # УЛЬТРА-МОЩНЫЙ БОНУС за использование деловых остатков
+        if layout.sheet.is_remainder:
+            score += 10000  # ОГРОМНЫЙ бонус за использование остатков - в 10 раз больше!
+            # МИНИМАЛЬНЫЙ штраф за отходы деловых остатков
+            score -= layout.waste_percent * 5  # Еще меньший штраф (в 20 раз меньше обычного)
+            
+            # ДОПОЛНИТЕЛЬНЫЕ БОНУСЫ для остатков:
+            score += 5000  # Базовый бонус просто за то, что это остаток
+            
+            # Бонус даже за минимальное использование остатка
+            if len(layout.get_placed_details()) > 0:
+                score += 2000  # Бонус за размещение хотя бы одной детали
+                
+            # Экспоненциальный бонус за эффективность использования остатков
+            utilization = layout.used_area / layout.total_area
+            score += utilization * 1000  # Увеличен бонус за эффективность в 5 раз
+            
+            # Бонус за каждую размещенную деталь на остатке
+            score += len(layout.get_placed_details()) * 500  # В 50 раз больше обычного
+            
+        else:
+            # Обычный штраф за отходы полноразмерных материалов
+            score -= layout.waste_percent * 100
+            # Обычный бонус за количество размещенных деталей
+            score += len(layout.get_placed_details()) * 10
         
-        # Бонус за деловые остатки
+        # Бонус за деловые остатки (для всех)
         score += layout.remnant_area / layout.total_area * 50
-        
-        # Бонус за количество размещенных деталей
-        score += len(layout.get_placed_details()) * 10
         
         return score
 
@@ -691,6 +972,22 @@ class GuillotineOptimizer:
             sizes = [f"{int(l.sheet.width)}x{int(l.sheet.height)}" for l in group_layouts]
             logger.info(f"  📋 {material_key}: {len(group_layouts)} листов, размеры: {', '.join(sizes)}")
         
+        # СПЕЦИАЛЬНАЯ СТАТИСТИКА ПО ОСТАТКАМ
+        remainder_layouts = [l for l in layouts if l.sheet.is_remainder]
+        full_sheet_layouts = [l for l in layouts if not l.sheet.is_remainder]
+        
+        if remainder_layouts:
+            remainder_total_area = sum(l.total_area for l in remainder_layouts)
+            remainder_used_area = sum(l.used_area for l in remainder_layouts)
+            remainder_waste_area = sum(l.waste_area for l in remainder_layouts)
+            remainder_utilization = (remainder_used_area / remainder_total_area * 100) if remainder_total_area > 0 else 0
+            
+            logger.info(f"🔥📊 СТАТИСТИКА ИСПОЛЬЗОВАНИЯ ОСТАТКОВ:")
+            logger.info(f"🔥   • Использовано остатков: {len(remainder_layouts)}")
+            logger.info(f"🔥   • Общая площадь остатков: {remainder_total_area:.0f} мм²")
+            logger.info(f"🔥   • Полезно использовано: {remainder_used_area:.0f} мм² ({remainder_utilization:.1f}%)")
+            logger.info(f"🔥   • Отходы остатков: {remainder_waste_area:.0f} мм²")
+        
         # Общая статистика
         total_area = sum(layout.total_area for layout in layouts)
         total_used = sum(layout.used_area for layout in layouts)
@@ -720,10 +1017,13 @@ class GuillotineOptimizer:
         
         # Сообщение о результате
         success = len(unplaced) == 0
+        remainder_count = len([l for l in layouts if l.sheet.is_remainder])
+        full_count = len([l for l in layouts if not l.sheet.is_remainder])
+        
         if success:
-            message = f"Все детали успешно размещены на {len(layouts)} листах"
+            message = f"🔥✅ ВСЕ ДЕТАЛИ РАЗМЕЩЕНЫ! Использовано: {remainder_count} остатков + {full_count} полноразмерных листов"
         else:
-            message = f"Размещено {sum(len(l.get_placed_details()) for l in layouts)} деталей, не размещено: {len(unplaced)}"
+            message = f"🔥📋 Размещено {sum(len(l.get_placed_details()) for l in layouts)} деталей ({remainder_count} остатков + {full_count} листов), не размещено: {len(unplaced)}"
         
         return OptimizationResult(
             success=success,
@@ -742,6 +1042,9 @@ def optimize(details: List[dict], materials: List[dict], remainders: List[dict],
             params: dict = None, progress_fn: Optional[Callable[[float], None]] = None, **kwargs) -> OptimizationResult:
     """
     Главная функция оптимизации для совместимости с существующим GUI
+    
+    ВАЖНОЕ ОГРАНИЧЕНИЕ: На каждом используемом листе (остаток или полноразмерный) 
+    должна размещаться хотя бы одна деталь. Листы без деталей не включаются в результат.
     """
     
     try:
@@ -858,6 +1161,7 @@ def optimize(details: List[dict], materials: List[dict], remainders: List[dict],
             min_remnant_width=float(kwargs.get('min_remnant_width', 100.0)),
             min_remnant_height=float(kwargs.get('min_remnant_height', 100.0)),
             target_waste_percent=float(kwargs.get('target_waste_percent', 5.0)),
+            remainder_waste_percent=float(kwargs.get('remainder_waste_percent', 20.0)),
             min_waste_side=float(kwargs.get('min_waste_side', 10.0)),
             use_warehouse_remnants=bool(kwargs.get('use_warehouse_remnants', True)),
             rotation_mode=RotationMode.ALLOW_90 if kwargs.get('allow_rotation', True) else RotationMode.NONE,

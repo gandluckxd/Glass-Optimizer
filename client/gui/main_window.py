@@ -539,6 +539,20 @@ class OptimizerWindow(QWidget):
         """)
         layout.addRow("🎯 Целевой % отходов:", self.target_waste_percent)
         
+        # Процент отходов для деловых остатков
+        self.remainder_waste_percent = QSpinBox()
+        self.remainder_waste_percent.setRange(1, 100)
+        self.remainder_waste_percent.setSuffix(" %")
+        self.remainder_waste_percent.setStyleSheet("""
+            QSpinBox {
+                background-color: #404040;
+                color: #ff9800;
+                font-weight: bold;
+                font-size: 12pt;
+            }
+        """)
+        layout.addRow("🔄 % отходов для остатков:", self.remainder_waste_percent)
+        
         # Минимальная сторона обрезка
         self.min_cut_size = QSpinBox()
         self.min_cut_size.setRange(5, 50)
@@ -1489,6 +1503,7 @@ class OptimizerWindow(QWidget):
             'min_remnant_width': self.min_remnant_width.value(),
             'min_remnant_height': self.min_remnant_height.value(),
             'target_waste_percent': self.target_waste_percent.value(),
+            'remainder_waste_percent': self.remainder_waste_percent.value(),
             'min_waste_side': self.min_cut_size.value(),
             'use_warehouse_remnants': self.use_remainders.isChecked()
         }
@@ -2987,6 +3002,7 @@ class OptimizerWindow(QWidget):
             self.min_remnant_width.setValue(settings.get('min_remnant_width', 180))
             self.min_remnant_height.setValue(settings.get('min_remnant_height', 100))
             self.target_waste_percent.setValue(settings.get('target_waste_percent', 5))
+            self.remainder_waste_percent.setValue(settings.get('remainder_waste_percent', 20))
             self.min_cut_size.setValue(settings.get('min_cut_size', 10))
             self.use_remainders.setChecked(settings.get('use_remainders', True))
             self.allow_rotation.setChecked(settings.get('allow_rotation', True))
@@ -2999,6 +3015,7 @@ class OptimizerWindow(QWidget):
             self.min_remnant_width.setValue(180)
             self.min_remnant_height.setValue(100)
             self.target_waste_percent.setValue(5)
+            self.remainder_waste_percent.setValue(20)
             self.min_cut_size.setValue(10)
             self.use_remainders.setChecked(True)
             self.allow_rotation.setChecked(True)
@@ -3011,6 +3028,7 @@ class OptimizerWindow(QWidget):
                 'min_remnant_width': self.min_remnant_width.value(),
                 'min_remnant_height': self.min_remnant_height.value(),
                 'target_waste_percent': self.target_waste_percent.value(),
+                'remainder_waste_percent': self.remainder_waste_percent.value(),
                 'min_cut_size': self.min_cut_size.value(),
                 'use_remainders': self.use_remainders.isChecked(),
                 'allow_rotation': self.allow_rotation.isChecked()
