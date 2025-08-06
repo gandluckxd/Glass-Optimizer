@@ -28,6 +28,8 @@ import json
 import logging
 from .dialogs import DebugDialog, ProgressDialog
 from .settings_manager import SettingsManager
+from .password_manager import PasswordManager
+from .password_dialog import PasswordManagementDialog
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -72,16 +74,23 @@ class OptimizerWindow(QWidget):
         # Инициализация менеджера настроек
         self.settings_manager = SettingsManager()
         
+        # Инициализация менеджера паролей
+        self.password_manager = PasswordManager()
+        
         # Инициализация диалогов
         self.debug_dialog = None
         self.progress_dialog = None
+        
+        # Флаг для блокировки проверки пароля во время инициализации
+        self._is_initializing = True
         
         # Настройка UI
         self.init_ui()
         
         # Настройка размера окна
         self.setWindowTitle("Оптимизатор 2D Раскроя")
-        self.setMinimumSize(1400, 900)  # Минимальный размер окна
+        self.setMinimumSize(1600, 1000)  # Увеличенный минимальный размер окна
+        self.resize(1800, 1200)  # Устанавливаем начальный размер окна
         
 
         
@@ -146,6 +155,16 @@ class OptimizerWindow(QWidget):
             # Если не получилось (не Windows или ошибка), продолжаем без темного заголовка
             print(f"🔧 DEBUG: Не удалось установить темный заголовок: {e}")
             pass
+
+    def closeEvent(self, event):
+        """Переопределение closeEvent для очистки кэша паролей при закрытии приложения"""
+        # Очищаем кэш успешных проверок пароля при закрытии приложения
+        if hasattr(self, 'password_manager'):
+            self.password_manager.clear_session_cache()
+            print("🔧 DEBUG: Кэш паролей очищен при закрытии приложения")
+        
+        # Вызываем родительский метод
+        super().closeEvent(event)
 
     def init_ui(self):
         """Инициализация интерфейса"""
@@ -539,7 +558,7 @@ class OptimizerWindow(QWidget):
         """)
         layout.addRow("🎯 Целевой % отходов:", self.target_waste_percent)
         
-        # Процент отходов для деловых остатков
+        # Процент отходов для деловых остатков (защищенный паролем)
         self.remainder_waste_percent = QSpinBox()
         self.remainder_waste_percent.setRange(1, 100)
         self.remainder_waste_percent.setSuffix(" %")
@@ -551,7 +570,15 @@ class OptimizerWindow(QWidget):
                 font-size: 12pt;
             }
         """)
-        layout.addRow("🔄 % отходов для остатков:", self.remainder_waste_percent)
+        
+        # Добавляем контекстное меню для управления паролем
+        self.remainder_waste_percent.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.remainder_waste_percent.customContextMenuRequested.connect(self.show_remainder_password_menu)
+        
+        # Подключаем событие изменения значения
+        self.remainder_waste_percent.valueChanged.connect(self.on_remainder_waste_percent_changed)
+        
+        layout.addRow("🔒 % отходов для остатков:", self.remainder_waste_percent)
         
         # Минимальная сторона обрезка
         self.min_cut_size = QSpinBox()
@@ -573,8 +600,8 @@ class OptimizerWindow(QWidget):
         # Кнопки на одном уровне
         buttons_layout = QHBoxLayout()
         
-        # Кнопка сохранения настроек (слева)
-        self.save_settings_button = QPushButton("💾 Сохранить начальные параметры")
+        # Кнопка сохранения настроек (слева) - защищенная паролем
+        self.save_settings_button = QPushButton("🔒 Сохранить начальные параметры")
         self.save_settings_button.clicked.connect(self.on_save_settings_clicked)
         self.save_settings_button.setStyleSheet("""
             QPushButton {
@@ -589,7 +616,30 @@ class OptimizerWindow(QWidget):
                 background-color: #106ebe;
             }
         """)
+        
+        # Добавляем контекстное меню для управления паролем
+        self.save_settings_button.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.save_settings_button.customContextMenuRequested.connect(self.show_save_settings_password_menu)
+        
         buttons_layout.addWidget(self.save_settings_button)
+        
+        # Кнопка управления паролями (в центре)
+        self.password_management_button = QPushButton("🔐 Управление паролями")
+        self.password_management_button.clicked.connect(self.show_password_management_dialog)
+        self.password_management_button.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b35;
+                color: white;
+                font-weight: bold;
+                font-size: 10pt;
+                padding: 8px 16px;
+                min-width: 180px;
+            }
+            QPushButton:hover {
+                background-color: #e55a2b;
+            }
+        """)
+        buttons_layout.addWidget(self.password_management_button)
         
         # Добавляем растяжку между кнопками
         buttons_layout.addStretch()
@@ -3003,6 +3053,8 @@ class OptimizerWindow(QWidget):
             self.min_remnant_height.setValue(settings.get('min_remnant_height', 100))
             self.target_waste_percent.setValue(settings.get('target_waste_percent', 5))
             self.remainder_waste_percent.setValue(settings.get('remainder_waste_percent', 20))
+            # Инициализируем предыдущее значение для парольной защиты
+            self._previous_remainder_waste_percent = settings.get('remainder_waste_percent', 20)
             self.min_cut_size.setValue(settings.get('min_cut_size', 10))
             self.use_remainders.setChecked(settings.get('use_remainders', True))
             self.allow_rotation.setChecked(settings.get('allow_rotation', True))
@@ -3016,12 +3068,133 @@ class OptimizerWindow(QWidget):
             self.min_remnant_height.setValue(100)
             self.target_waste_percent.setValue(5)
             self.remainder_waste_percent.setValue(20)
+            # Инициализируем предыдущее значение для парольной защиты
+            self._previous_remainder_waste_percent = 20
             self.min_cut_size.setValue(10)
             self.use_remainders.setChecked(True)
             self.allow_rotation.setChecked(True)
+        
+        # Сбрасываем флаг инициализации после загрузки настроек
+        self._is_initializing = False
+    
+
+    
+    # ===== МЕТОДЫ ПАРОЛЬНОЙ ЗАЩИТЫ =====
+    
+    def show_password_management_dialog(self):
+        """Показать диалог управления паролями"""
+        dialog = PasswordManagementDialog(self.password_manager, self)
+        dialog.exec_()
+    
+    def show_remainder_password_menu(self, position):
+        """Показать контекстное меню для поля '% отхода для деловых остатков'"""
+        menu = QMenu(self)
+        
+        change_password_action = menu.addAction("Изменить пароль")
+        reset_password_action = menu.addAction("Сбросить к дефолту")
+        menu.addSeparator()
+        force_check_action = menu.addAction("🔄 Повторная проверка пароля")
+        menu.addSeparator()
+        info_action = menu.addAction("ℹ️ Информация о паролях")
+        
+        action = menu.exec_(self.remainder_waste_percent.mapToGlobal(position))
+        
+        if action == change_password_action:
+            self.password_manager.change_password('remainder_waste_percent', self)
+        elif action == reset_password_action:
+            if self.password_manager.reset_to_default('remainder_waste_percent'):
+                default_password = self.password_manager.get_default_password('remainder_waste_percent')
+                QMessageBox.information(
+                    self,
+                    "Пароль сброшен",
+                    f"Пароль сброшен к дефолтному значению: {default_password}",
+                    QMessageBox.Ok
+                )
+        elif action == force_check_action:
+            # Удаляем действие из кэша для принудительной повторной проверки
+            self.password_manager.remove_from_cache('remainder_waste_percent')
+            QMessageBox.information(
+                self,
+                "Повторная проверка",
+                "Кэш пароля очищен. При следующем изменении поля потребуется повторный ввод пароля.",
+                QMessageBox.Ok
+            )
+        elif action == info_action:
+            QMessageBox.information(
+                self,
+                "Информация о паролях",
+                "Для изменения защищенных параметров требуется ввод пароля.\n\n"
+                "Рекомендуется использовать надежные пароли для обеспечения безопасности.",
+                QMessageBox.Ok
+            )
+    
+    def show_save_settings_password_menu(self, position):
+        """Показать контекстное меню для кнопки сохранения настроек"""
+        menu = QMenu(self)
+        
+        change_password_action = menu.addAction("Изменить пароль")
+        reset_password_action = menu.addAction("Сбросить к дефолту")
+        menu.addSeparator()
+        force_check_action = menu.addAction("🔄 Повторная проверка пароля")
+        menu.addSeparator()
+        info_action = menu.addAction("ℹ️ Информация о паролях")
+        
+        action = menu.exec_(self.save_settings_button.mapToGlobal(position))
+        
+        if action == change_password_action:
+            self.password_manager.change_password('save_default_settings', self)
+        elif action == reset_password_action:
+            if self.password_manager.reset_to_default('save_default_settings'):
+                default_password = self.password_manager.get_default_password('save_default_settings')
+                QMessageBox.information(
+                    self,
+                    "Пароль сброшен",
+                    f"Пароль сброшен к дефолтному значению: {default_password}",
+                    QMessageBox.Ok
+                )
+        elif action == force_check_action:
+            # Удаляем действие из кэша для принудительной повторной проверки
+            self.password_manager.remove_from_cache('save_default_settings')
+            QMessageBox.information(
+                self,
+                "Повторная проверка",
+                "Кэш пароля очищен. При следующем сохранении настроек потребуется повторный ввод пароля.",
+                QMessageBox.Ok
+            )
+        elif action == info_action:
+            QMessageBox.information(
+                self,
+                "Информация о паролях",
+                "Для изменения защищенных параметров требуется ввод пароля.\n\n"
+                "Рекомендуется использовать надежные пароли для обеспечения безопасности.",
+                QMessageBox.Ok
+            )
+    
+    def on_remainder_waste_percent_changed(self, value):
+        """Обработчик изменения значения '% отхода для деловых остатков'"""
+        # Пропускаем проверку пароля во время инициализации
+        if self._is_initializing:
+            return
+        
+        # Проверяем пароль при изменении значения
+        if not self.password_manager.check_password('remainder_waste_percent', self):
+            # Если пароль неверный, возвращаем предыдущее значение
+            # Нам нужно сохранить предыдущее значение
+            if hasattr(self, '_previous_remainder_waste_percent'):
+                self.remainder_waste_percent.setValue(self._previous_remainder_waste_percent)
+            else:
+                # Если это первое изменение, устанавливаем дефолтное значение
+                self.remainder_waste_percent.setValue(20)
+        else:
+            # Пароль верный, сохраняем текущее значение как предыдущее
+            self._previous_remainder_waste_percent = value
     
     def on_save_settings_clicked(self):
-        """Обработчик нажатия кнопки сохранения настроек"""
+        """Обработчик нажатия кнопки сохранения настроек (с парольной защитой)"""
+        # Проверяем пароль перед сохранением
+        if not self.password_manager.check_password('save_default_settings', self):
+            return  # Если пароль неверный, не сохраняем
+        
         try:
             # Собираем текущие значения параметров
             settings = {
