@@ -24,6 +24,13 @@ class PasswordManager:
             'remainder_waste_percent': 'admin123',
             'save_default_settings': 'admin456'
         }
+        
+        # Словарь соответствий технических названий пользовательским
+        self.action_display_names = {
+            'remainder_waste_percent': '% отхода для деловых остатков',
+            'save_default_settings': 'Сохранить параметры по умолчанию'
+        }
+        
         # Кэш успешных проверок пароля в рамках сессии
         self._verified_actions: Set[str] = set()
         self._load_passwords()
@@ -84,10 +91,11 @@ class PasswordManager:
             return True
         
         # Запрашиваем пароль у пользователя
+        display_name = self.get_display_name(action)
         password, ok = QInputDialog.getText(
             parent_widget,
             "Введите пароль",
-            f"Для изменения параметра '{action}' требуется пароль:",
+            f"Для изменения параметра '{display_name}' требуется пароль:",
             QLineEdit.Password,
             ""
         )
@@ -133,10 +141,11 @@ class PasswordManager:
             return False
         
         # Запрашиваем текущий пароль
+        display_name = self.get_display_name(action)
         current_password, ok = QInputDialog.getText(
             parent_widget,
             "Текущий пароль",
-            f"Введите текущий пароль для '{action}':",
+            f"Введите текущий пароль для '{display_name}':",
             QLineEdit.Password,
             ""
         )
@@ -155,10 +164,11 @@ class PasswordManager:
             return False
         
         # Запрашиваем новый пароль
+        display_name = self.get_display_name(action)
         new_password, ok = QInputDialog.getText(
             parent_widget,
             "Новый пароль",
-            f"Введите новый пароль для '{action}':",
+            f"Введите новый пароль для '{display_name}':",
             QLineEdit.Password,
             ""
         )
@@ -167,10 +177,11 @@ class PasswordManager:
             return False
         
         # Подтверждаем новый пароль
+        display_name = self.get_display_name(action)
         confirm_password, ok = QInputDialog.getText(
             parent_widget,
             "Подтверждение пароля",
-            f"Повторите новый пароль для '{action}':",
+            f"Повторите новый пароль для '{display_name}':",
             QLineEdit.Password,
             ""
         )
@@ -191,10 +202,11 @@ class PasswordManager:
         # Удаляем действие из кэша, так как пароль изменился
         self._verified_actions.discard(action)
         
+        display_name = self.get_display_name(action)
         QMessageBox.information(
             parent_widget,
             "Пароль изменен",
-            f"Пароль для '{action}' успешно изменен.",
+            f"Пароль для '{display_name}' успешно изменен.",
             QMessageBox.Ok
         )
         
@@ -213,3 +225,15 @@ class PasswordManager:
             self._verified_actions.discard(action)
             return True
         return False 
+
+    def get_display_name(self, action: str) -> str:
+        """
+        Получение пользовательского названия для действия
+        
+        Args:
+            action: Техническое название действия
+            
+        Returns:
+            Пользовательское название действия
+        """
+        return self.action_display_names.get(action, action) 

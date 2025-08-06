@@ -17,7 +17,7 @@ class PasswordManagementDialog(QDialog):
         self.password_manager = password_manager
         self.setWindowTitle("Управление паролями")
         self.setModal(True)
-        self.setFixedSize(400, 300)
+        self.setFixedSize(800, 600)
         self.init_ui()
     
     def init_ui(self):
@@ -72,20 +72,6 @@ class PasswordManagementDialog(QDialog):
         save_layout.addRow(save_buttons)
         layout.addWidget(save_group)
         
-        # Информация о дефолтных паролях
-        info_group = QGroupBox("ℹ️ Информация о паролях")
-        info_layout = QVBoxLayout(info_group)
-        
-        info_text = QLabel(
-            "Дефолтные пароли:\n"
-            "Рекомендуется изменить эти пароли на более безопасные."
-        )
-        info_text.setStyleSheet("color: #ffaa00; font-size: 10pt; background-color: #2a2a2a; padding: 10px;")
-        info_text.setWordWrap(True)
-        info_layout.addWidget(info_text)
-        
-        layout.addWidget(info_group)
-        
         # Кнопки управления
         buttons_layout = QHBoxLayout()
         
@@ -110,30 +96,31 @@ class PasswordManagementDialog(QDialog):
     def change_password(self, action: str):
         """Изменение пароля"""
         if self.password_manager.change_password(action, self):
+            display_name = self.password_manager.get_display_name(action)
             QMessageBox.information(
                 self,
                 "Успех",
-                f"Пароль для '{action}' успешно изменен!",
+                f"Пароль для '{display_name}' успешно изменен!",
                 QMessageBox.Ok
             )
     
     def reset_password(self, action: str):
         """Сброс пароля к дефолтному значению"""
+        display_name = self.password_manager.get_display_name(action)
         reply = QMessageBox.question(
             self,
             "Подтверждение сброса",
-            f"Вы уверены, что хотите сбросить пароль для '{action}' к дефолтному значению?",
+            f"Вы уверены, что хотите сбросить пароль для '{display_name}' к дефолтному значению?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No
         )
         
         if reply == QMessageBox.Yes:
             if self.password_manager.reset_to_default(action):
-                default_password = self.password_manager.get_default_password(action)
                 QMessageBox.information(
                     self,
                     "Пароль сброшен",
-                    f"Пароль для '{action}' сброшен к дефолтному значению: {default_password}",
+                    f"Пароль для '{display_name}' сброшен к дефолтному значению.",
                     QMessageBox.Ok
                 )
             else:

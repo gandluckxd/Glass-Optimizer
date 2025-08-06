@@ -3104,10 +3104,11 @@ class OptimizerWindow(QWidget):
         elif action == reset_password_action:
             if self.password_manager.reset_to_default('remainder_waste_percent'):
                 default_password = self.password_manager.get_default_password('remainder_waste_percent')
+                display_name = self.password_manager.get_display_name('remainder_waste_percent')
                 QMessageBox.information(
                     self,
                     "Пароль сброшен",
-                    f"Пароль сброшен к дефолтному значению: {default_password}",
+                    f"Пароль для '{display_name}' сброшен к дефолтному значению: {default_password}",
                     QMessageBox.Ok
                 )
         elif action == force_check_action:
@@ -3146,10 +3147,11 @@ class OptimizerWindow(QWidget):
         elif action == reset_password_action:
             if self.password_manager.reset_to_default('save_default_settings'):
                 default_password = self.password_manager.get_default_password('save_default_settings')
+                display_name = self.password_manager.get_display_name('save_default_settings')
                 QMessageBox.information(
                     self,
                     "Пароль сброшен",
-                    f"Пароль сброшен к дефолтному значению: {default_password}",
+                    f"Пароль для '{display_name}' сброшен к дефолтному значению: {default_password}",
                     QMessageBox.Ok
                 )
         elif action == force_check_action:
