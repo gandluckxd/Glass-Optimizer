@@ -586,6 +586,64 @@ class OptimizerWindow(QWidget):
         self.min_cut_size.setSuffix(" мм")
         layout.addRow("Минимальная сторона обрезка:", self.min_cut_size)
         
+        # НОВЫЕ ПАРАМЕТРЫ ДЛЯ МИНИМИЗАЦИИ ДЕЛОВЫХ ОСТАТКОВ
+        # Агрессивное уменьшение деловых остатков
+        self.aggressive_remnant_reduction = QCheckBox("🔧 Агрессивное уменьшение деловых остатков")
+        self.aggressive_remnant_reduction.setStyleSheet("""
+            QCheckBox {
+                color: #00ff00;
+                font-weight: bold;
+                font-size: 11pt;
+            }
+        """)
+        layout.addRow(self.aggressive_remnant_reduction)
+        
+        # Минимальная площадь делового остатка
+        self.min_remnant_area = QSpinBox()
+        self.min_remnant_area.setRange(1000, 50000)
+        self.min_remnant_area.setSuffix(" мм²")
+        self.min_remnant_area.setStyleSheet("""
+            QSpinBox {
+                background-color: #404040;
+                color: #00ff00;
+                font-weight: bold;
+                font-size: 11pt;
+            }
+        """)
+        layout.addRow("🔧 Мин. площадь делового остатка:", self.min_remnant_area)
+        
+        # Уровень оптимизации остатков
+        self.remnant_optimization_level = QSpinBox()
+        self.remnant_optimization_level.setRange(1, 3)
+        self.remnant_optimization_level.setSuffix("")
+        self.remnant_optimization_level.setStyleSheet("""
+            QSpinBox {
+                background-color: #404040;
+                color: #00ff00;
+                font-weight: bold;
+                font-size: 11pt;
+            }
+        """)
+        layout.addRow("🔧 Уровень оптимизации остатков (1-3):", self.remnant_optimization_level)
+        
+        # Максимальное количество деловых остатков на лист
+        self.max_remnant_count_per_sheet = QSpinBox()
+        self.max_remnant_count_per_sheet.setRange(1, 10)
+        self.max_remnant_count_per_sheet.setSuffix(" шт")
+        self.max_remnant_count_per_sheet.setStyleSheet("""
+            QSpinBox {
+                background-color: #404040;
+                color: #00ff00;
+                font-weight: bold;
+                font-size: 11pt;
+            }
+        """)
+        layout.addRow("🔧 Макс. количество остатков на лист:", self.max_remnant_count_per_sheet)
+        
+        # Разрешить размещение мелких деталей в остатках
+        self.allow_small_details_in_remnants = QCheckBox("🔧 Разрешить мелкие детали в остатках")
+        layout.addRow(self.allow_small_details_in_remnants)мальная сторона обрезка:", self.min_cut_size)
+        
         # Использование остатков
         self.use_remainders = QCheckBox("Использовать остатки со склада")
         layout.addRow(self.use_remainders)
@@ -1555,7 +1613,13 @@ class OptimizerWindow(QWidget):
             'target_waste_percent': self.target_waste_percent.value(),
             'remainder_waste_percent': self.remainder_waste_percent.value(),
             'min_waste_side': self.min_cut_size.value(),
-            'use_warehouse_remnants': self.use_remainders.isChecked()
+            'use_warehouse_remnants': self.use_remainders.isChecked(),
+            # НОВЫЕ ПАРАМЕТРЫ ДЛЯ МИНИМИЗАЦИИ ДЕЛОВЫХ ОСТАТКОВ
+            'aggressive_remnant_reduction': self.aggressive_remnant_reduction.isChecked(),
+            'min_remnant_area': self.min_remnant_area.value(),
+            'remnant_optimization_level': self.remnant_optimization_level.value(),
+            'max_remnant_count_per_sheet': self.max_remnant_count_per_sheet.value(),
+            'allow_small_details_in_remnants': self.allow_small_details_in_remnants.isChecked()
         }
         
         # Запускаем оптимизацию в отдельном потоке
@@ -3059,6 +3123,13 @@ class OptimizerWindow(QWidget):
             self.use_remainders.setChecked(settings.get('use_remainders', True))
             self.allow_rotation.setChecked(settings.get('allow_rotation', True))
             
+            # НОВЫЕ ПАРАМЕТРЫ ДЛЯ МИНИМИЗАЦИИ ДЕЛОВЫХ ОСТАТКОВ
+            self.aggressive_remnant_reduction.setChecked(settings.get('aggressive_remnant_reduction', True))
+            self.min_remnant_area.setValue(settings.get('min_remnant_area', 5000))
+            self.remnant_optimization_level.setValue(settings.get('remnant_optimization_level', 2))
+            self.max_remnant_count_per_sheet.setValue(settings.get('max_remnant_count_per_sheet', 3))
+            self.allow_small_details_in_remnants.setChecked(settings.get('allow_small_details_in_remnants', True))
+            
             print(f"🔧 DEBUG: Настройки загружены: {settings}")
             
         except Exception as e:
@@ -3073,6 +3144,13 @@ class OptimizerWindow(QWidget):
             self.min_cut_size.setValue(10)
             self.use_remainders.setChecked(True)
             self.allow_rotation.setChecked(True)
+            
+            # НОВЫЕ ПАРАМЕТРЫ ПО УМОЛЧАНИЮ
+            self.aggressive_remnant_reduction.setChecked(True)
+            self.min_remnant_area.setValue(5000)
+            self.remnant_optimization_level.setValue(2)
+            self.max_remnant_count_per_sheet.setValue(3)
+            self.allow_small_details_in_remnants.setChecked(True)
         
         # Сбрасываем флаг инициализации после загрузки настроек
         self._is_initializing = False
@@ -3206,7 +3284,13 @@ class OptimizerWindow(QWidget):
                 'remainder_waste_percent': self.remainder_waste_percent.value(),
                 'min_cut_size': self.min_cut_size.value(),
                 'use_remainders': self.use_remainders.isChecked(),
-                'allow_rotation': self.allow_rotation.isChecked()
+                'allow_rotation': self.allow_rotation.isChecked(),
+                # НОВЫЕ ПАРАМЕТРЫ ДЛЯ МИНИМИЗАЦИИ ДЕЛОВЫХ ОСТАТКОВ
+                'aggressive_remnant_reduction': self.aggressive_remnant_reduction.isChecked(),
+                'min_remnant_area': self.min_remnant_area.value(),
+                'remnant_optimization_level': self.remnant_optimization_level.value(),
+                'max_remnant_count_per_sheet': self.max_remnant_count_per_sheet.value(),
+                'allow_small_details_in_remnants': self.allow_small_details_in_remnants.isChecked()
             }
             
             # Сохраняем настройки
