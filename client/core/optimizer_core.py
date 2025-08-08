@@ -256,6 +256,88 @@ class GuillotineOptimizer:
         if self.progress_callback:
             self.progress_callback(progress)
 
+    def _pre_use_all_remainders(
+        self,
+        details: List[Detail],
+        sheets: List[Sheet]
+    ) -> Tuple[List[SheetLayout], List[Detail], List[str]]:
+        """Пытается задействовать каждый деловой остаток хотя бы одной деталью до основной оптимизации.
+
+        Возвращает: (layouts, remaining_details, used_remainder_ids)
+        """
+        layouts: List[SheetLayout] = []
+        remaining_details = details.copy()
+        used_remainder_ids: List[str] = []
+
+        # Берём только остатки и сортируем их от меньших к большим (проще найти хоть что-то)
+        remainder_sheets = [s for s in sheets if s.is_remainder]
+        remainder_sheets.sort(key=lambda s: (s.area, s.id))
+
+        for sheet in remainder_sheets:
+            if not remaining_details:
+                break
+
+            # Быстрая геометрическая проверка
+            if not self._can_fit_on_remainder(remaining_details, sheet):
+                continue
+
+            # Оставляем только те детали, которые помещаются по геометрии (с учетом поворота)
+            fitting_details = []
+            sw, sh = sheet.width, sheet.height
+            for det in remaining_details:
+                fits = (det.width <= sw and det.height <= sh) or (
+                    det.can_rotate and det.height <= sw and det.width <= sh
+                )
+                if fits:
+                    fitting_details.append(det)
+
+            if not fitting_details:
+                continue
+
+            # Ищем лучшую раскладку на остатке, пытаясь разместить МАКСИМУМ деталей
+            best_layout = None
+            best_score = float('-inf')
+
+            # Больше попыток для остатков, но меньше чем в основном цикле
+            max_tries = max(3, self.params.max_iterations_per_sheet)
+            for iteration in range(max_tries):
+                layout = self._create_sheet_layout_guillotine(sheet, fitting_details.copy(), iteration)
+
+                # Контроль отходов для остатков
+                allowed_waste_percent = self._get_allowed_waste_percent(sheet)
+                if layout.waste_percent > allowed_waste_percent + 15.0:
+                    continue
+
+                # Оценка качества раскладки
+                score = self._evaluate_layout(layout)
+
+                if score > best_score and layout.get_placed_details():
+                    best_score = score
+                    best_layout = layout
+
+                # Если разместили много деталей (например, >50% площади) — достаточно
+                if layout.used_area / layout.total_area > 0.6:
+                    best_layout = layout
+                    break
+
+            if not best_layout or not best_layout.get_placed_details():
+                continue
+
+            # Зафиксируем результат
+            layouts.append(best_layout)
+            used_remainder_ids.append(sheet.id)
+
+            placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
+            remaining_details = [d for d in remaining_details if d.id not in placed_ids]
+
+        return layouts, remaining_details, used_remainder_ids
+
+    def _is_valid_cut_for_remnant(self, remnant: PlacedItem, width: float, height: float) -> bool:
+        """Проверяет корректность гильотинного разреза внутри прямоугольника остатка.
+        Учитывает min_waste_side через _is_valid_guillotine_cut."""
+        area = Rectangle(remnant.x, remnant.y, remnant.width, remnant.height)
+        return self._is_valid_guillotine_cut(area, width, height)
+
     def optimize(self, details: List[Detail], sheets: List[Sheet]) -> OptimizationResult:
         """Основной метод оптимизации с улучшенным алгоритмом заполнения деловых остатков"""
         start_time = time.time()
@@ -273,13 +355,23 @@ class GuillotineOptimizer:
         
         self._report_progress(10.0)
         
+        # ПРЕДВАРИТЕЛЬНЫЙ ПРОХОД: попытаться использовать КАЖДЫЙ деловой остаток хотя бы одной деталью
+        logger.info("🔄 ПРЕДВАРИТЕЛЬНЫЙ ПРОХОД: пытаемся использовать каждый деловой остаток хотя бы одной деталью")
+        pre_layouts, expanded_details, used_pre_remainders = self._pre_use_all_remainders(expanded_details, sorted_sheets)
+        logger.info(f"📊 ПРЕДВАРИТЕЛЬНЫЙ ПРОХОД: использовано остатков: {len(used_pre_remainders)}")
+
+        # Исключаем уже использованные остатки из дальнейшего рассмотрения
+        if used_pre_remainders:
+            used_ids = set(used_pre_remainders)
+            sorted_sheets = [s for s in sorted_sheets if not (s.is_remainder and s.id in used_ids)]
+
         # Группировка по материалам
         material_groups = self._group_details_by_material(expanded_details)
         
         self._report_progress(20.0)
         
         # Оптимизация для каждого материала
-        all_layouts = []
+        all_layouts = pre_layouts.copy() if pre_layouts else []
         all_unplaced = []
         progress_step = 60.0 / len(material_groups)
         current_progress = 25.0
@@ -351,12 +443,14 @@ class GuillotineOptimizer:
         return groups
 
     def _can_fit_on_remainder(self, details: List[Detail], remainder: Sheet) -> bool:
-        """Проверяет, можно ли разместить хотя бы одну деталь на остатке"""
-        # Проверяем, поместится ли хотя бы самая большая деталь
-        largest_detail = max(details, key=lambda d: d.area)
-        # Используем параметр remainder_waste_percent из GUI
-        allowed_usage_percent = 100.0 - self.params.remainder_waste_percent
-        return largest_detail.area <= remainder.area * (allowed_usage_percent / 100.0)
+        """Проверяет, можно ли разместить хотя бы одну деталь на остатке по ГЕОМЕТРИИ (c учетом поворота)."""
+        rem_w, rem_h = remainder.width, remainder.height
+        for d in details:
+            if (d.width <= rem_w and d.height <= rem_h) or (
+                d.can_rotate and d.height <= rem_w and d.width <= rem_h
+            ):
+                return True
+        return False
 
     def _optimize_material(self, details: List[Detail], sheets: List[Sheet]) -> Tuple[List[SheetLayout], List[Detail]]:
         """Оптимизация размещения деталей одного материала с МАКСИМАЛЬНЫМ приоритетом остатков"""
@@ -384,6 +478,14 @@ class GuillotineOptimizer:
                 break
             
             logger.info(f"🎯 МАКСИМАЛЬНО пытаемся использовать остаток {sheet.id} ({sheet.width}x{sheet.height})")
+            # Быстрая проверка: поместится ли вообще хоть одна из крупных деталей с учетом допустимого процента отхода
+            try:
+                if not self._can_fit_on_remainder(unplaced_details, sheet):
+                    logger.info(f"⏭️ Пропускаем остаток {sheet.id}: слишком мал для размещения деталей с учетом remainder_waste_percent")
+                    continue
+            except Exception:
+                # На всякий случай не прерываем процесс
+                pass
             
             # МАКСИМАЛЬНОЕ количество попыток с разными стратегиями
             best_layout = None
@@ -392,14 +494,15 @@ class GuillotineOptimizer:
             
             for iteration in range(self.params.max_iterations_per_sheet * 5):  # Увеличиваем попытки в 5 раз
                 layout = self._create_sheet_layout_guillotine(sheet, unplaced_details.copy(), iteration)
-                
-                # МАКСИМАЛЬНО ГИБКИЕ ТРЕБОВАНИЯ ДЛЯ ОСТАТКОВ: Очень низкие требования к покрытию
-                coverage = layout.get_coverage_percent()
-                if coverage < 85.0:  # Снижаем требования с 95% до 85%
+
+                # УЧИТЫВАЕМ ПРОЦЕНТ ОТХОДОВ ДЛЯ ОСТАТКОВ: отбрасываем только экстремальные случаи
+                allowed_waste_percent = self._get_allowed_waste_percent(sheet)
+                if layout.waste_percent > allowed_waste_percent + 15.0:
+                    # Если отход заметно превышает допустимый для остатков – пропускаем раскладку
                     continue
                 
-                # Проверяем наличие плохих отходов (очень мягкие требования для остатков)
-                if layout.has_bad_waste(self.params.min_waste_side * 0.3):  # Снижаем требования к отходам еще больше
+                # Проверяем наличие плохих отходов (мягкие требования для остатков)
+                if layout.has_bad_waste(self.params.min_waste_side * 0.3):
                     continue
                 
                 # Оцениваем раскладку с МАКСИМАЛЬНЫМ акцентом на использование остатка
@@ -664,22 +767,23 @@ class GuillotineOptimizer:
 
     def _fill_remaining_areas(self, layout: SheetLayout, free_areas: List[Rectangle]):
         """Заполняет все оставшиеся области как остатки или отходы с ПРАВИЛЬНОЙ логикой"""
-        print(f"🔧 OPTIMIZER: Заполнение оставшихся областей. Количество областей: {len(free_areas)}")
+        logger.debug(f"OPTIMIZER: Заполнение оставшихся областей. Количество областей: {len(free_areas)}")
         
         for i, area in enumerate(free_areas):
-            # ПРАВИЛЬНАЯ ЛОГИКА: Простые критерии для деловых остатков
+            # ЕДИНАЯ ЛОГИКА: деловой остаток, если меньшая сторона > меньшего параметра и большая сторона > большего параметра
             min_side = min(area.width, area.height)
             max_side = max(area.width, area.height)
             param_min = min(self.params.min_remnant_width, self.params.min_remnant_height)
             param_max = max(self.params.min_remnant_width, self.params.min_remnant_height)
-            
-            # ПРОСТОЕ ПРАВИЛО: Если меньшая сторона ≥ меньший параметр И большая сторона ≥ больший параметр
-            if min_side >= param_min and max_side >= param_max:
+
+            is_remnant = (min_side > param_min and max_side > param_max)
+
+            if is_remnant:
                 item_type = "remnant"
-                print(f"🔧 OPTIMIZER: Область {i+1}: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК (min_side={min_side:.0f}≥{param_min:.0f}, max_side={max_side:.0f}≥{param_max:.0f})")
+                logger.debug(f"OPTIMIZER: Область {i+1}: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК")
             else:
                 item_type = "waste"
-                print(f"🔧 OPTIMIZER: Область {i+1}: {area.width:.0f}x{area.height:.0f} - ОТХОД (min_side={min_side:.0f}<{param_min:.0f} или max_side={max_side:.0f}<{param_max:.0f})")
+                logger.debug(f"OPTIMIZER: Область {i+1}: {area.width:.0f}x{area.height:.0f} - ОТХОД")
             
             placed_item = PlacedItem(
                 x=area.x,
@@ -695,7 +799,7 @@ class GuillotineOptimizer:
         # Подсчитываем итоги
         remnants_count = len([item for item in layout.placed_items if item.item_type == "remnant"])
         waste_count = len([item for item in layout.placed_items if item.item_type == "waste"])
-        print(f"🔧 OPTIMIZER: Итоги заполнения - Деловых остатков: {remnants_count}, Отходов: {waste_count}")
+        logger.debug(f"OPTIMIZER: Итоги заполнения - Деловых остатков: {remnants_count}, Отходов: {waste_count}")
         
         # Дополнительная проверка на 100% покрытие
         total_area_covered = sum(item.area for item in layout.placed_items)
@@ -823,6 +927,12 @@ class GuillotineOptimizer:
                 score += 50   # Бонус за маленькие остатки (можно объединить)
             else:
                 score += 200  # Бонус за минимальные остатки
+
+            # ЯВНЫЙ ШТРАФ за количество деловых остатков на цельных листах
+            remnant_count_penalty = remnant_count * 300
+            if remnant_count > 2:
+                remnant_count_penalty += (remnant_count - 2) * 200
+            score -= remnant_count_penalty
         
         # Бонус за количество размещенных деталей
         score += len(layout.get_placed_details()) * 10
@@ -1303,7 +1413,7 @@ class GuillotineOptimizer:
         param_min = min(self.params.min_remnant_width, self.params.min_remnant_height)
         param_max = max(self.params.min_remnant_width, self.params.min_remnant_height)
         
-        return (min_side >= param_min and max_side >= param_max)
+        return (min_side > param_min and max_side > param_max)
 
     def _are_remnants_adjacent(self, remnant1: PlacedItem, remnant2: PlacedItem) -> bool:
         """Проверяет, являются ли остатки соседними"""
@@ -1431,40 +1541,16 @@ class GuillotineOptimizer:
 
     def _classify_and_add_area(self, area: Rectangle, layout: SheetLayout):
         """Классифицирует область как остаток или отход и добавляет в раскладку"""
-        # УЛУЧШЕННАЯ ЛОГИКА: Более гибкие критерии для деловых остатков при агрессивном размещении
+        # ЕДИНАЯ ЛОГИКА: деловой остаток, если меньшая сторона > меньшего параметра и большая сторона > большего параметра
         min_side = min(area.width, area.height)
         max_side = max(area.width, area.height)
         param_min = min(self.params.min_remnant_width, self.params.min_remnant_height)
         param_max = max(self.params.min_remnant_width, self.params.min_remnant_height)
-        
-        # БОЛЕЕ ГИБКИЕ ПРАВИЛА: Снижаем требования для остатков при агрессивном размещении
-        # Если область достаточно большая по площади, считаем её остатком
-        area_size = area.width * area.height
-        min_remnant_area = self.params.min_remnant_width * self.params.min_remnant_height
-        
-        # ПРАВИЛО 1: Стандартные критерии
-        if min_side >= param_min and max_side >= param_max:
-            item_type = "remnant"
-            logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК (стандартные критерии)")
-        # ПРАВИЛО 2: Если область достаточно большая по площади
-        elif area_size >= min_remnant_area * 0.6:  # Снижаем с 80% до 60%
-            item_type = "remnant"
-            logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК (по площади: {area_size:.0f}≥{min_remnant_area*0.6:.0f})")
-        # ПРАВИЛО 3: Если одна из сторон достаточно большая
-        elif max_side >= param_max * 0.6 and min_side >= param_min * 0.4:  # Снижаем требования
-            item_type = "remnant"
-            logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК (по сторонам: max={max_side:.0f}≥{param_max*0.6:.0f}, min={min_side:.0f}≥{param_min*0.4:.0f})")
-        # ПРАВИЛО 4: Если область достаточно большая по одной из сторон
-        elif max_side >= param_max * 0.8:  # Если большая сторона достаточно большая
-            item_type = "remnant"
-            logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК (по большой стороне: {max_side:.0f}≥{param_max*0.8:.0f})")
-        # ПРАВИЛО 5: Если область имеет хорошие пропорции
-        elif min_side >= param_min * 0.3 and max_side >= param_max * 0.5:  # Еще более мягкие требования
-            item_type = "remnant"
-            logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - ДЕЛОВОЙ ОСТАТОК (по пропорциям)")
-        else:
-            item_type = "waste"
-            logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - ОТХОД (слишком маленькая)")
+
+        is_remnant = (min_side > param_min and max_side > param_max)
+
+        item_type = "remnant" if is_remnant else "waste"
+        logger.debug(f"🔧 ОБЛАСТЬ: {area.width:.0f}x{area.height:.0f} - {'ДЕЛОВОЙ ОСТАТОК' if is_remnant else 'ОТХОД'}")
         
         placed_item = PlacedItem(
             x=area.x,

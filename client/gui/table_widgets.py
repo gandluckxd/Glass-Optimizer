@@ -203,7 +203,7 @@ def update_remnants_result_table(table: QTableWidget, result, min_remnant_width=
                 param_min = min(min_remnant_width, min_remnant_height)
                 param_max = max(min_remnant_width, min_remnant_height)
                 
-                if element_min_side >= param_min and element_max_side >= param_max:
+                if element_min_side > param_min and element_max_side > param_max:
                     # Используем материал листа как g_marking
                     key = (g_marking, rect.width, rect.height)
                     if key in remnants_grouped:

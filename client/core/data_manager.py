@@ -111,11 +111,42 @@ class DataManager(QObject):
                     progress_wrapper = None
                 
                 # Запуск оптимизации
+                # Пробрасываем параметры оптимизации из core.config (с маппингом ключей)
+                try:
+                    from core.config import DEFAULT_OPTIMIZATION_PARAMS as DEFAULTS
+                except Exception:
+                    DEFAULTS = {}
+
+                params = {}
+                if DEFAULTS:
+                    # Маппинг имён параметров GUI/CORE -> optimize()
+                    if 'target_waste_percent' in DEFAULTS:
+                        params['target_waste_percent'] = DEFAULTS['target_waste_percent']
+                    if 'remainder_waste_percent' in DEFAULTS:
+                        params['remainder_waste_percent'] = DEFAULTS['remainder_waste_percent']
+                    if 'allow_rotation' in DEFAULTS:
+                        params['allow_rotation'] = DEFAULTS['allow_rotation']
+                    # GUI: min_cut_size -> optimize: min_waste_side
+                    if 'min_cut_size' in DEFAULTS:
+                        params['min_waste_side'] = DEFAULTS['min_cut_size']
+                    # GUI: blade_width -> optimize: cutting_width
+                    if 'blade_width' in DEFAULTS:
+                        params['cutting_width'] = DEFAULTS['blade_width']
+                    # GUI: use_remainders -> optimize: use_warehouse_remnants
+                    if 'use_remainders' in DEFAULTS:
+                        params['use_warehouse_remnants'] = DEFAULTS['use_remainders']
+                    # Если заданы размеры деловых остатков
+                    if 'min_remnant_width' in DEFAULTS:
+                        params['min_remnant_width'] = DEFAULTS['min_remnant_width']
+                    if 'min_remnant_height' in DEFAULTS:
+                        params['min_remnant_height'] = DEFAULTS['min_remnant_height']
+
                 result = optimize(
                     details=self.current_details,
                     materials=self.current_materials,
                     remainders=self.current_remainders,
-                    progress_callback=progress_wrapper
+                    params=params if params else None,
+                    progress_fn=progress_wrapper
                 )
                 
                 if result and result.success:
