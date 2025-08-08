@@ -285,6 +285,9 @@ class GuillotineOptimizer:
             fitting_details = []
             sw, sh = sheet.width, sheet.height
             for det in remaining_details:
+                # ВАЖНО: Материал детали должен совпадать с материалом остатка
+                if det.material != sheet.material:
+                    continue
                 fits = (det.width <= sw and det.height <= sh) or (
                     det.can_rotate and det.height <= sw and det.width <= sh
                 )
@@ -415,10 +418,11 @@ class GuillotineOptimizer:
         """Подготовка деталей"""
         expanded = []
         
-        for detail in details:
+        for base_index, detail in enumerate(details):
             for i in range(detail.quantity):
                 detail_copy = copy.deepcopy(detail)
-                detail_copy.id = f"{detail.id}_{i+1}"
+                # Гарантируем ГЛОБАЛЬНУЮ уникальность идентификатора даже при совпадающих orderitemsid
+                detail_copy.id = f"{detail.id}__{base_index+1}_{i+1}"
                 detail_copy.quantity = 1
                 expanded.append(detail_copy)
         
@@ -1031,11 +1035,16 @@ class GuillotineOptimizer:
                 for remnant_info in all_remnants:
                     remnant = remnant_info['remnant']
                     layout = remnant_info['layout']
+
+                    # Материал должен совпадать
+                    if detail.material != layout.sheet.material:
+                        continue
                     
                     # Пробуем разные стратегии размещения от менее к более агрессивным
                     if self._can_place_detail_in_remnant_aggressive(detail, remnant, layout):
-                        # Размещаем деталь
-                        self._place_detail_in_remnant(detail, remnant, layout)
+                        # Размещаем деталь (с валидацией разрезов)
+                        if not self._place_detail_in_remnant(detail, remnant, layout):
+                            continue
                         placed = True
                         placed_count += 1
                         iteration_placed += 1
@@ -1045,8 +1054,9 @@ class GuillotineOptimizer:
                     
                     # Если агрессивная стратегия не сработала, пробуем очень агрессивную
                     elif self._can_place_detail_in_remnant_very_aggressive(detail, remnant, layout):
-                        # Размещаем деталь
-                        self._place_detail_in_remnant(detail, remnant, layout)
+                        # Размещаем деталь (с валидацией разрезов)
+                        if not self._place_detail_in_remnant(detail, remnant, layout):
+                            continue
                         placed = True
                         placed_count += 1
                         iteration_placed += 1
@@ -1056,8 +1066,9 @@ class GuillotineOptimizer:
                     
                     # Если очень агрессивная стратегия не сработала, пробуем экстремальную
                     elif self._can_place_detail_in_remnant_extreme(detail, remnant, layout):
-                        # Размещаем деталь
-                        self._place_detail_in_remnant(detail, remnant, layout)
+                        # Размещаем деталь (с валидацией разрезов)
+                        if not self._place_detail_in_remnant(detail, remnant, layout):
+                            continue
                         placed = True
                         placed_count += 1
                         iteration_placed += 1
@@ -1067,8 +1078,9 @@ class GuillotineOptimizer:
                     
                     # Если экстремальная стратегия не сработала, пробуем ультра экстремальную
                     elif self._can_place_detail_in_remnant_ultra_extreme(detail, remnant, layout):
-                        # Размещаем деталь
-                        self._place_detail_in_remnant(detail, remnant, layout)
+                        # Размещаем деталь (с валидацией разрезов)
+                        if not self._place_detail_in_remnant(detail, remnant, layout):
+                            continue
                         placed = True
                         placed_count += 1
                         iteration_placed += 1
@@ -1078,8 +1090,9 @@ class GuillotineOptimizer:
                     
                     # Если ультра экстремальная стратегия не сработала, пробуем умеренную (на всякий случай)
                     elif self._can_place_detail_in_remnant_moderate(detail, remnant, layout):
-                        # Размещаем деталь
-                        self._place_detail_in_remnant(detail, remnant, layout)
+                        # Размещаем деталь (с валидацией разрезов)
+                        if not self._place_detail_in_remnant(detail, remnant, layout):
+                            continue
                         placed = True
                         placed_count += 1
                         iteration_placed += 1
@@ -1453,8 +1466,14 @@ class GuillotineOptimizer:
         
         return merged_remnant
 
-    def _place_detail_in_remnant(self, detail: Detail, remnant: PlacedItem, layout: SheetLayout):
-        """Размещает деталь в остатке с улучшенной логикой ориентации"""
+    def _place_detail_in_remnant(self, detail: Detail, remnant: PlacedItem, layout: SheetLayout) -> bool:
+        """Размещает деталь в остатке с улучшенной логикой ориентации.
+        Возвращает True, если размещение выполнено, иначе False.
+
+        ВАЖНО: Строго соблюдаем границы остатка и min_waste_side через
+        _is_valid_cut_for_remnant. Не допускаем размещение деталей, выходящих
+        за пределы остатка даже на "допусках".
+        """
         # Определяем ориентацию с учетом агрессивных стратегий
         is_rotated = False
         width = detail.width
@@ -1476,15 +1495,15 @@ class GuillotineOptimizer:
             # Только повернутая ориентация подходит
             is_rotated = True
             width, height = detail.height, detail.width
-        elif not normal_fits:
-            # Ни одна ориентация не подходит точно, но мы пытаемся разместить агрессивно
-            # Выбираем ориентацию с минимальным переполнением
-            normal_overflow = max(0, detail.width - remnant.width) + max(0, detail.height - remnant.height)
-            rotated_overflow = max(0, detail.height - remnant.width) + max(0, detail.width - remnant.height)
-            
-            if detail.can_rotate and rotated_overflow < normal_overflow:
-                is_rotated = True
-                width, height = detail.height, detail.width
+        else:
+            # Жесткое правило: не размещаем, если не умещается ни в одной ориентации
+            return False
+
+        # Финальная проверка корректности гильотинного разреза внутри остатка
+        if width > remnant.width or height > remnant.height:
+            return False
+        if not self._is_valid_cut_for_remnant(remnant, width, height):
+            return False
         
         # Создаем размещенную деталь
         placed_detail = PlacedItem(
@@ -1510,6 +1529,8 @@ class GuillotineOptimizer:
         for area in remaining_areas:
             if area.width > 0 and area.height > 0:
                 self._classify_and_add_area(area, layout)
+
+        return True
 
     def _calculate_remaining_areas_after_placement(self, original_remnant: PlacedItem, placed_detail: PlacedItem) -> List[Rectangle]:
         """Вычисляет оставшиеся области после размещения детали в остатке"""
