@@ -400,16 +400,6 @@ class GuillotineOptimizer:
         logger.info(f"🔄 ПРЕДВАРИТЕЛЬНЫЙ ЭТАП: Объединяем небольшие деловые остатки")
         self._merge_small_remnants(all_layouts)
         
-        # НОВЫЙ ЛОКАЛЬНЫЙ ПРОХОД: для каждого листа локально заполнить его свободные области
-        if all_unplaced:
-            before_cnt = len(all_unplaced)
-            for layout in all_layouts:
-                if not all_unplaced:
-                    break
-                all_unplaced = self._fill_free_areas_on_sheet(layout, all_unplaced)
-            after_cnt = len(all_unplaced)
-            logger.info(f"🔄 Локальный проход по листам: дополнительно размещено {before_cnt - after_cnt} деталей")
-
         all_unplaced = self._fill_remnants_with_details(all_layouts, all_unplaced)
         
         self._report_progress(95.0)
@@ -608,28 +598,6 @@ class GuillotineOptimizer:
                     logger.info(f"✅ УСПЕШНО использован цельный лист {sheet.id}: "
                                f"{len(best_layout.get_placed_details())} деталей, "
                                f"отходы {best_layout.waste_percent:.1f}%")
-
-                    # ДОПОЛНИТЕЛЬНЫЙ ШАГ: Сразу после формирования раскладки на цельном листе
-                    # пытаемся ДОКОМПЛЕКТОВАТЬ его деловые остатки оставшимися деталями
-                    # того же материала, чтобы снизить количество деловых остатков.
-                    try:
-                        # Перед заполнением пробуем объединить мелкие остатки на этом листе
-                        self._merge_small_remnants([best_layout])
-
-                        before_cnt = len(unplaced_details)
-                        # Сначала локально заполняем свободные прямоугольники на текущем листе
-                        unplaced_details = self._fill_free_areas_on_sheet(best_layout, unplaced_details)
-                        # Затем страховочно используем общий алгоритм заполнения для этого листа
-                        unplaced_details = self._fill_remnants_with_details([best_layout], unplaced_details)
-                        after_cnt = len(unplaced_details)
-                        placed_extra = before_cnt - after_cnt
-                        if placed_extra > 0:
-                            logger.info(
-                                f"🔄 Доукомплектовали остатки листа {sheet.id}: дополнительно размещено {placed_extra} деталей"
-                            )
-                    except Exception as e:
-                        # Не даём дополнительному этапу повлиять на основной процесс
-                        logger.warning(f"⚠️ Ошибка при доукомплектовании остатков листа {sheet.id}: {e}")
         
         return layouts, unplaced_details
 
@@ -1146,113 +1114,6 @@ class GuillotineOptimizer:
         logger.info(f"📊 АГРЕССИВНОЕ заполнение завершено: размещено {placed_count} деталей за {total_iterations} итераций, осталось {len(remaining_details)}")
         
         return remaining_details
-
-    def _fill_free_areas_on_sheet(self, layout: SheetLayout, unplaced_details: List[Detail]) -> List[Detail]:
-        """Локально заполняет свободные прямоугольники (деловые остатки) данного листа деталями того же материала.
-        Возвращает обновлённый список неразмещённых деталей.
-
-        Строго соблюдает min_waste_side через _is_valid_cut_for_remnant и использует точную
-        проверку габаритов без искусственных допусков. Выбирает размещение, минимизирующее
-        остаточную площадь и образование новых деловых остатков.
-        """
-        if not unplaced_details:
-            return unplaced_details
-
-        # Берём только детали этого же материала
-        candidates = [d for d in unplaced_details if d.material == layout.sheet.material]
-        if not candidates:
-            return unplaced_details
-
-        # Итеративно размещаем лучшие детали, пока это возможно
-        placed_any = True
-        while candidates and placed_any:
-            placed_any = False
-
-            # Текущие деловые остатки на листе
-            remnants = layout.get_remnants()
-            if not remnants:
-                break
-
-            # Сортируем остатки по площади (крупные сначала)
-            remnants = sorted(remnants, key=lambda r: -r.area)
-
-            best_choice = None  # (score, remnant, detail, is_rotated, width, height)
-
-            # Сортируем детали по площади (крупные сначала)
-            sorted_details = sorted(candidates, key=lambda d: (-d.area, -d.priority, d.id))
-
-            for rem in remnants:
-                # Формируем прямоугольник области для оценки
-                area_rect = Rectangle(rem.x, rem.y, rem.width, rem.height)
-
-                for det in sorted_details:
-                    # Пробуем без поворота и с поворотом
-                    orientations = [(det.width, det.height, False)]
-                    if self.params.rotation_mode != RotationMode.NONE and det.can_rotate:
-                        orientations.append((det.height, det.width, True))
-
-                    for width, height, is_rotated in orientations:
-                        # Геометрическое вхождение
-                        if width > rem.width or height > rem.height:
-                            continue
-
-                        # Гарантия корректности разрезов и min_waste_side
-                        if not self._is_valid_cut_for_remnant(rem, width, height):
-                            continue
-
-                        # Оценка размещения: минимизируем остатки и количество новых деловых остатков
-                        base_waste = area_rect.area - (width * height)
-
-                        # Смоделируем возникающие области (правая и верхняя) без мутации layout
-                        potential_areas = []
-                        if rem.width > width:
-                            potential_areas.append((rem.width - width, height))
-                        if rem.height > height:
-                            potential_areas.append((rem.width, rem.height - height))
-
-                        # Подсчитаем, какие потенциальные области стали бы деловыми остатками
-                        param_min = min(self.params.min_remnant_width, self.params.min_remnant_height)
-                        param_max = max(self.params.min_remnant_width, self.params.min_remnant_height)
-
-                        remnant_penalty = 0.0
-                        for pw, ph in potential_areas:
-                            if pw >= self.params.min_waste_side and ph >= self.params.min_waste_side:
-                                min_side = min(pw, ph)
-                                max_side = max(pw, ph)
-                                would_be_remnant = (min_side > param_min and max_side > param_max)
-                                if would_be_remnant:
-                                    # Штрафуем за образование нового делового остатка
-                                    remnant_penalty += pw * ph
-
-                        # Итоговый скор: остаточная площадь + штраф за потенциальные деловые остатки
-                        score = base_waste + remnant_penalty
-
-                        # Выбираем глобально лучшее размещение на листе
-                        if best_choice is None or score < best_choice[0]:
-                            best_choice = (score, rem, det, is_rotated, width, height)
-
-            if best_choice is None:
-                break
-
-            # Применяем найденное лучшее размещение
-            _, chosen_rem, chosen_det, is_rotated, width, height = best_choice
-
-            # Для вызова _place_detail_in_remnant ориентация определяется внутри, но
-            # если нужно повернуть — подготовим det локально (лишь для согласования размеров)
-            det_to_place = chosen_det
-            if is_rotated:
-                det_to_place = chosen_det.get_rotated()
-
-            if self._place_detail_in_remnant(det_to_place, chosen_rem, layout):
-                # Удаляем деталь из кандидатов и общего списка
-                candidates.remove(chosen_det)
-                unplaced_details.remove(chosen_det)
-                placed_any = True
-            else:
-                # Если внезапно не удалось, исключаем эту деталь из рассмотрения, чтобы не зациклиться
-                candidates.remove(chosen_det)
-
-        return unplaced_details
 
     def _can_place_detail_in_remnant_moderate(self, detail: Detail, remnant: PlacedItem, layout: SheetLayout) -> bool:
         """Умеренная проверка возможности размещения детали в остатке"""
