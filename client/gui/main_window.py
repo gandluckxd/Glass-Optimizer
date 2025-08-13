@@ -451,6 +451,11 @@ class OptimizerWindow(QWidget):
         self.load_data_button.clicked.connect(self.on_load_data_clicked)
         input_layout.addWidget(self.load_data_button)
         
+        # Кнопка загрузки тестовых данных (из локального файла)
+        self.load_test_data_button = QPushButton("Загрузка тестовых данных")
+        self.load_test_data_button.clicked.connect(self.on_load_test_data_clicked)
+        input_layout.addWidget(self.load_test_data_button)
+        
         layout.addLayout(input_layout)
 
         # Информационные поля
@@ -1533,6 +1538,47 @@ class OptimizerWindow(QWidget):
         # Запускаем в потоке
         thread = threading.Thread(target=load_data, daemon=True)
         thread.start()
+
+    def on_load_test_data_clicked(self):
+        """Загрузка данных из локального JSON, сформированного скриптом fetch_test_data.py"""
+        try:
+            # Путь по умолчанию: client/test_data/test_data_31442.json
+            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+            default_path = os.path.join(base_dir, "test_data", "test_data_31442.json")
+
+            if not os.path.exists(default_path):
+                QMessageBox.warning(
+                    self,
+                    "Файл не найден",
+                    "Не найден файл тестовых данных. Сначала выполните выгрузку:\n\n"
+                    "1) Активируйте venv клиента\n"
+                    "2) Запустите: python .\\client\\tools\\fetch_test_data.py --grorderid 31442\n\n"
+                    f"Ожидаемый файл: {default_path}"
+                )
+                return
+
+            with open(default_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+            details_data = data.get("details_data") or {}
+            # Совместимость ключей
+            if "items" in details_data and "details" not in details_data:
+                details_data["details"] = details_data["items"]
+
+            remainders = data.get("remainders", []) or []
+            materials = data.get("materials", []) or []
+
+            # Установим grorderid и поле ввода, если есть
+            grorderid = data.get("grorderid")
+            if grorderid:
+                self.current_grorderid = int(grorderid)
+                self.grorderid_input.setText(str(self.current_grorderid))
+
+            # Обновляем UI через уже существующий поток обновления
+            self.data_loaded_signal.emit(details_data, remainders, materials)
+            print("✅ Тестовые данные загружены из файла")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось загрузить тестовые данные: {e}")
 
     # ========== МЕТОДЫ ОПТИМИЗАЦИИ ==========
     
