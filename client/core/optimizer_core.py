@@ -300,28 +300,23 @@ class GuillotineOptimizer:
             # Ищем лучшую раскладку на остатке, пытаясь разместить МАКСИМУМ деталей
             best_layout = None
             best_score = float('-inf')
+            best_usage_percent = 0.0
 
-            # Больше попыток для остатков, но меньше чем в основном цикле
-            max_tries = max(3, self.params.max_iterations_per_sheet)
+            # Существенно увеличиваем число попыток на остатках
+            max_tries = max(10, self.params.max_iterations_per_sheet * 5)
             for iteration in range(max_tries):
                 layout = self._create_sheet_layout_guillotine(sheet, fitting_details.copy(), iteration)
 
-                # Контроль отходов для остатков
-                allowed_waste_percent = self._get_allowed_waste_percent(sheet)
-                if layout.waste_percent > allowed_waste_percent + 15.0:
-                    continue
+                # Для остатков не фильтруем по проценту отходов: цель — разместить максимум деталей
 
-                # Оценка качества раскладки
+                # Оцениваем по использованию площади в первую очередь
+                usage_percent = (layout.used_area / layout.total_area * 100) if layout.total_area > 0 else 0.0
                 score = self._evaluate_layout(layout)
 
-                if score > best_score and layout.get_placed_details():
+                if layout.get_placed_details() and (usage_percent > best_usage_percent or (usage_percent == best_usage_percent and score > best_score)):
+                    best_usage_percent = usage_percent
                     best_score = score
                     best_layout = layout
-
-                # Если разместили много деталей (например, >50% площади) — достаточно
-                if layout.used_area / layout.total_area > 0.6:
-                    best_layout = layout
-                    break
 
             if not best_layout or not best_layout.get_placed_details():
                 continue
@@ -392,16 +387,7 @@ class GuillotineOptimizer:
             self._report_progress(current_progress)
         
         self._report_progress(90.0)
-        
-        # НОВЫЙ ЭТАП: Заполнение деловых остатков
-        logger.info(f"🔄 ЭТАП ЗАПОЛНЕНИЯ: Заполняем деловые остатки оставшимися деталями")
-        
-        # ПРЕДВАРИТЕЛЬНЫЙ ЭТАП: Объединение небольших деловых остатков
-        logger.info(f"🔄 ПРЕДВАРИТЕЛЬНЫЙ ЭТАП: Объединяем небольшие деловые остатки")
-        self._merge_small_remnants(all_layouts)
-        
-        all_unplaced = self._fill_remnants_with_details(all_layouts, all_unplaced)
-        
+
         self._report_progress(95.0)
         
         # Финальный результат
@@ -499,11 +485,7 @@ class GuillotineOptimizer:
             for iteration in range(self.params.max_iterations_per_sheet * 5):  # Увеличиваем попытки в 5 раз
                 layout = self._create_sheet_layout_guillotine(sheet, unplaced_details.copy(), iteration)
 
-                # УЧИТЫВАЕМ ПРОЦЕНТ ОТХОДОВ ДЛЯ ОСТАТКОВ: отбрасываем только экстремальные случаи
-                allowed_waste_percent = self._get_allowed_waste_percent(sheet)
-                if layout.waste_percent > allowed_waste_percent + 15.0:
-                    # Если отход заметно превышает допустимый для остатков – пропускаем раскладку
-                    continue
+                # Для остатков не фильтруем по проценту отходов: цель — использовать максимум остатков
                 
                 # Проверяем наличие плохих отходов (мягкие требования для остатков)
                 if layout.has_bad_waste(self.params.min_waste_side * 0.3):
@@ -590,14 +572,22 @@ class GuillotineOptimizer:
                         best_layout = layout
                 
                 if best_layout and best_layout.get_placed_details():
+                    # Сначала исключаем уже размещённые на базовой раскладке детали из пула свободных
+                    base_placed_ids = {item.detail.id for item in best_layout.get_placed_details() if item.detail}
+                    if base_placed_ids:
+                        unplaced_details = [d for d in unplaced_details if d.id not in base_placed_ids]
+
+                    # СРАЗУ после этого дополнительно заполняем остатки этого листа только СВОБОДНЫМИ деталями
+                    before_fill = len(best_layout.get_placed_details())
+                    unplaced_details, additionally_placed = self._fill_layout_remnants_with_details(best_layout, unplaced_details)
+                    after_fill = len(best_layout.get_placed_details())
+
                     layouts.append(best_layout)
-                    # Удаляем размещенные детали
-                    placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
-                    unplaced_details = [d for d in unplaced_details if d.id not in placed_ids]
-                    
-                    logger.info(f"✅ УСПЕШНО использован цельный лист {sheet.id}: "
-                               f"{len(best_layout.get_placed_details())} деталей, "
-                               f"отходы {best_layout.waste_percent:.1f}%")
+                    logger.info(
+                        f"✅ УСПЕШНО использован цельный лист {sheet.id}: базово {before_fill} деталей, "
+                        f"добавлено {additionally_placed}, итого {len(best_layout.get_placed_details())}; "
+                        f"отходы {best_layout.waste_percent:.1f}%"
+                    )
         
         return layouts, unplaced_details
 
@@ -705,9 +695,12 @@ class GuillotineOptimizer:
         # Предпочитаем размещения, которые минимизируют остатки
         waste = area.area - (width * height)
         
-        # Бонус за точное соответствие размерам
+        # Бонус за точное соответствие размерам (сильнее поощряем на цельных листах)
         if abs(area.width - width) < 0.1 or abs(area.height - height) < 0.1:
-            waste *= 0.5
+            if sheet and not sheet.is_remainder:
+                waste *= 0.35
+            else:
+                waste *= 0.5
         
         # Штраф за поворот детали (предпочитаем исходную ориентацию)
         if is_rotated:
@@ -719,7 +712,7 @@ class GuillotineOptimizer:
             waste *= 0.001  # Еще больше снижаем штраф за отходы на остатках
             logger.debug(f"🔧 ОГРОМНЫЙ бонус за размещение на остатке: штраф снижен с {waste/0.001:.1f} до {waste:.1f}")
         elif sheet and not sheet.is_remainder:
-            # Для цельных листов: УМЕРЕННЫЙ штраф за создание деловых остатков
+            # Для цельных листов: усиливаем стремление не плодить множество остатков
             remaining_width = area.width - width
             remaining_height = area.height - height
             
@@ -727,6 +720,13 @@ class GuillotineOptimizer:
             min_remnant_width = self.params.min_remnant_width * 1.5  # Снижены требования
             min_remnant_height = self.params.min_remnant_height * 1.5
             min_remnant_area = min_remnant_width * min_remnant_height * 2.0  # Снижены требования
+            
+            # Дополнительный штраф за L-образные остатки (оба остатка > 0) — ведет к большему числу фрагментов
+            if remaining_width > 0 and remaining_height > 0:
+                waste *= 2.5
+            else:
+                # Небольшой бонус, если один из остатков равен нулю — формально уменьшаем число фрагментов
+                waste *= 0.9
             
             # Если создаются деловые остатки, добавляем УМЕРЕННЫЙ штраф
             if ((remaining_width >= min_remnant_width and remaining_width > 0) or \
@@ -779,7 +779,6 @@ class GuillotineOptimizer:
             max_side = max(area.width, area.height)
             param_min = min(self.params.min_remnant_width, self.params.min_remnant_height)
             param_max = max(self.params.min_remnant_width, self.params.min_remnant_height)
-
             is_remnant = (min_side > param_min and max_side > param_max)
 
             if is_remnant:
@@ -1114,6 +1113,309 @@ class GuillotineOptimizer:
         logger.info(f"📊 АГРЕССИВНОЕ заполнение завершено: размещено {placed_count} деталей за {total_iterations} итераций, осталось {len(remaining_details)}")
         
         return remaining_details
+
+    def _fill_layout_remnants_with_details(self, layout: SheetLayout, unplaced_details: List[Detail]) -> Tuple[List[Detail], int]:
+        """Заполняет деловые остатки КОНКРЕТНОГО цельного листа дополнительными деталями.
+        Возвращает (обновленный список неразмещенных деталей, количество дополнительно размещенных деталей).
+
+        ВАЖНО: Работает только для цельных листов. Остатки-материалы не затрагиваются.
+        """
+        if layout.sheet.is_remainder:
+            return unplaced_details, 0
+
+        if not unplaced_details:
+            return unplaced_details, 0
+
+        # Фильтруем детали по материалу листа
+        candidate_details = [d for d in unplaced_details if d.material == layout.sheet.material]
+        if not candidate_details:
+            return unplaced_details, 0
+
+        # Сортировка: крупные и приоритетные сначала. Исключаем уже размещённые на других листах
+        placed_global_ids: Set[str] = set()
+        for pi in layout.placed_items:
+            if pi.item_type == "detail" and pi.detail:
+                placed_global_ids.add(pi.detail.id)
+        candidate_details = [d for d in candidate_details if d.id not in placed_global_ids]
+        candidate_details.sort(key=lambda d: (-d.area, -d.priority, d.id))
+        remaining_details = candidate_details.copy()
+
+        placed_count = 0
+        max_iterations = 100
+        total_iterations = 0
+
+        while remaining_details and total_iterations < max_iterations:
+            total_iterations += 1
+            iteration_placed = 0
+
+            details_to_remove: List[Detail] = []
+            for detail in remaining_details:
+                placed = False
+                # Каждый раз берём актуальный список свободных областей (остатки + отходы), т.к. он меняется в процессе
+                # Формируем список актуальных свободных прямоугольников на основе placed_items
+                # Это надёжнее, чем полагаться на сохранённые типы, если где-то ранее были несогласованные изменения
+                current_free = []
+                for item in layout.placed_items:
+                    if item.item_type in ("remnant", "waste"):
+                        current_free.append(item)
+                if not current_free:
+                    break
+                current_free = sorted(current_free, key=lambda r: -r.area)
+                for free_item in current_free:
+                    # Сначала пробуем строгим гильотинным способом, если это деловой остаток
+                    if free_item.item_type == "remnant":
+                        if self._can_place_detail_in_remnant_aggressive(detail, free_item, layout) and \
+                           self._place_detail_in_remnant(detail, free_item, layout):
+                            placed = True
+                        elif self._can_place_detail_in_remnant_very_aggressive(detail, free_item, layout) and \
+                             self._place_detail_in_remnant(detail, free_item, layout):
+                            placed = True
+                        elif self._can_place_detail_in_remnant_extreme(detail, free_item, layout) and \
+                             self._place_detail_in_remnant(detail, free_item, layout):
+                            placed = True
+                        elif self._can_place_detail_in_remnant_moderate(detail, free_item, layout) and \
+                             self._place_detail_in_remnant(detail, free_item, layout):
+                            placed = True
+                        if placed:
+                            pass
+                    # Если не удалось или это отход — пробуем свободную укладку без гильотинных ограничений
+                    # Соблюдаем минимальную сторону отходов и границы листа
+                    if not placed and self._can_place_in_free_area_simple(detail, free_item):
+                        if self._place_detail_in_free_area_freecut(detail, free_item, layout):
+                            placed = True
+
+                    if placed:
+                        placed_count += 1
+                        iteration_placed += 1
+                        details_to_remove.append(detail)
+                        break
+
+            for d in details_to_remove:
+                if d in remaining_details:
+                    remaining_details.remove(d)
+
+            if iteration_placed == 0:
+                break
+
+        # Возвращаем обновленный глобальный список неразмещенных деталей:
+        # исключаем те, что мы могли дополнительно поставить на этом листе
+        placed_now_ids: Set[str] = {pi.detail.id for pi in layout.get_placed_details() if pi.detail}
+        updated_unplaced = [d for d in unplaced_details if d.id not in placed_now_ids]
+        return updated_unplaced, placed_count
+
+    def _remove_detail_and_add_free_area(self, layout: SheetLayout, detail_item: PlacedItem):
+        """Удаляет деталь из раскладки и превращает ее место в свободную область (waste/remnant)."""
+        try:
+            layout.placed_items.remove(detail_item)
+        except ValueError:
+            return
+        area = Rectangle(detail_item.x, detail_item.y, detail_item.width, detail_item.height)
+        self._classify_and_add_area(area, layout)
+
+    def _place_detail_on_layout_best_fit(self, detail: Detail, layout: SheetLayout) -> bool:
+        """Пытается разместить деталь на данном листе (сначала на остатках по правилам, затем free-cut на любой свободной области)."""
+        # 1) Остатки по строгим правилам
+        remnants = sorted(layout.get_remnants(), key=lambda r: -r.area)
+        for rem in remnants:
+            if self._can_place_detail_in_remnant_aggressive(detail, rem, layout) and self._place_detail_in_remnant(detail, rem, layout):
+                return True
+            if self._can_place_detail_in_remnant_very_aggressive(detail, rem, layout) and self._place_detail_in_remnant(detail, rem, layout):
+                return True
+            if self._can_place_detail_in_remnant_extreme(detail, rem, layout) and self._place_detail_in_remnant(detail, rem, layout):
+                return True
+            if self._can_place_detail_in_remnant_moderate(detail, rem, layout) and self._place_detail_in_remnant(detail, rem, layout):
+                return True
+
+        # 2) Любая свободная область (остатки+отходы) свободной укладкой
+        free_areas = sorted(layout.get_remnants() + layout.get_waste(), key=lambda r: -r.area)
+        for area in free_areas:
+            if self._can_place_in_free_area_simple(detail, area):
+                if self._place_detail_in_free_area_freecut(detail, area, layout):
+                    return True
+        return False
+
+    def _cross_fill_material_sheets(self, layouts: List[SheetLayout]) -> List[SheetLayout]:
+        """Переносит детали между ЦЕЛЬНЫМИ листами одного материала, чтобы сократить большие деловые остатки
+        и потенциально избавиться от малоиспользованных листов.
+        Остатки-материалы не затрагиваются. Частичные переносы допускаются.
+        """
+        from collections import defaultdict
+        material_to_layouts: Dict[str, List[SheetLayout]] = defaultdict(list)
+        for l in layouts:
+            if not l.sheet.is_remainder:
+                material_to_layouts[l.sheet.material].append(l)
+
+        for material, mats in material_to_layouts.items():
+            if len(mats) < 2:
+                continue
+            # Итеративно пытаемся переносить
+            changed = True
+            while changed:
+                changed = False
+                receivers = sorted(mats, key=lambda l: -l.remnant_area)  # где больше свободной площади
+                donors = sorted(mats, key=lambda l: (len(l.get_placed_details()), l.used_area))  # наименее заполненные
+
+                for receiver in receivers:
+                    # Обновляем свободные области; если их нет — нечего догружать
+                    if receiver.remnant_area + receiver.waste_area <= 0:
+                        continue
+                    for donor in donors:
+                        if donor is receiver:
+                            continue
+                        donor_items = [pi for pi in donor.get_placed_details()]
+                        if not donor_items:
+                            continue
+                        # Крупные детали сначала
+                        donor_items.sort(key=lambda pi: -(pi.width * pi.height))
+                        moved_any = False
+                        for pi in donor_items:
+                            d = pi.detail
+                            if d is None or d.material != receiver.sheet.material:
+                                continue
+                            if self._place_detail_on_layout_best_fit(d, receiver):
+                                # Успешно перенесли: убираем с донора и добавляем свободную область
+                                self._remove_detail_and_add_free_area(donor, pi)
+                                changed = True
+                                moved_any = True
+                        # Если донор опустел — попробуем удалить его из общего списка и из mats
+                        if moved_any and len(donor.get_placed_details()) == 0:
+                            try:
+                                layouts.remove(donor)
+                                mats.remove(donor)
+                                changed = True
+                                logger.info(f"🧩 Консолидация: лист {donor.sheet.id} опустел и удален после переносов в {receiver.sheet.id}")
+                            except ValueError:
+                                pass
+                # Конец одного прохода
+        return layouts
+
+    def _cross_fill_into_layout(self, receiver: SheetLayout, built_layouts: List[SheetLayout]):
+        """Быстро пытается догрузить ТЕКУЩИЙ цельный лист из ранее собранных цельных листов того же материала.
+        Не трогает остатки-материалы. Допускаются частичные переносы.
+        """
+        if receiver.sheet.is_remainder:
+            return
+        donor_candidates = [l for l in built_layouts if (not l.sheet.is_remainder) and l.sheet.material == receiver.sheet.material and l is not receiver]
+        if not donor_candidates:
+            return
+        # Пытаемся взять крупные детали сначала
+        for donor in donor_candidates:
+            donor_items = [pi for pi in donor.get_placed_details()]
+            donor_items.sort(key=lambda pi: -(pi.width * pi.height))
+            moved_any = False
+            for pi in donor_items:
+                d = pi.detail
+                if d is None:
+                    continue
+                if self._place_detail_on_layout_best_fit(d, receiver):
+                    self._remove_detail_and_add_free_area(donor, pi)
+                    moved_any = True
+            # Если донор опустел — удалим его из списка ранее собранных
+            if moved_any and len(donor.get_placed_details()) == 0:
+                try:
+                    built_layouts.remove(donor)
+                    logger.info(f"🧩 Локальная консолидация: лист {donor.sheet.id} опустел после переносов в {receiver.sheet.id} и удален")
+                except ValueError:
+                    pass
+
+    def _can_place_in_free_area_simple(self, detail: Detail, free_item: PlacedItem) -> bool:
+        """Проверяет, помещается ли деталь в свободную прямоугольную область (без гильотинных правил)."""
+        if detail.width <= free_item.width and detail.height <= free_item.height:
+            return True
+        if detail.can_rotate and detail.height <= free_item.width and detail.width <= free_item.height:
+            return True
+        return False
+
+    def _place_detail_in_free_area_freecut(self, detail: Detail, free_item: PlacedItem, layout: SheetLayout) -> bool:
+        """Размещает деталь в ЛЮБОЙ свободной области (остаток или отход) без проверки гильотинных разрезов.
+        Выбирает лучшую ориентацию и схему разбиения (сначала вправо или сначала вверх),
+        затем делит область на две новые, соблюдая min_waste_side и границы листа.
+        """
+        # Определяем ориентацию
+        is_rotated = False
+        width = detail.width
+        height = detail.height
+        if width > free_item.width or height > free_item.height:
+            if detail.can_rotate and detail.height <= free_item.width and detail.width <= free_item.height:
+                is_rotated = True
+                width, height = detail.height, detail.width
+        # Финальная проверка размера
+        if width > free_item.width or height > free_item.height:
+            return False
+
+        # Оцениваем две схемы разбиения: Right-Then-Top (RT) и Top-Then-Right (TR)
+        def try_split(rt_first: bool) -> Tuple[bool, List[Rectangle]]:
+            remainders: List[Rectangle] = []
+            # правая часть
+            remainder_right_w = free_item.width - width
+            remainder_top_h = free_item.height - height
+            if rt_first:
+                if remainder_right_w >= self.params.min_waste_side:
+                    remainders.append(Rectangle(
+                        free_item.x + width,
+                        free_item.y,
+                        remainder_right_w,
+                        height
+                    ))
+                if remainder_top_h >= self.params.min_waste_side:
+                    remainders.append(Rectangle(
+                        free_item.x,
+                        free_item.y + height,
+                        free_item.width,
+                        remainder_top_h
+                    ))
+            else:
+                if remainder_top_h >= self.params.min_waste_side:
+                    remainders.append(Rectangle(
+                        free_item.x,
+                        free_item.y + height,
+                        free_item.width,
+                        remainder_top_h
+                    ))
+                if remainder_right_w >= self.params.min_waste_side:
+                    remainders.append(Rectangle(
+                        free_item.x + width,
+                        free_item.y,
+                        remainder_right_w,
+                        height
+                    ))
+            # критерий качества: суммарная площадь остатков и penalize вытянутые
+            quality = 0.0
+            for r in remainders:
+                aspect = max(r.width, r.height) / max(1.0, min(r.width, r.height))
+                quality += r.area * (1.0 / aspect)
+            return True, remainders
+
+        _, remainders_rt = try_split(True)
+        _, remainders_tr = try_split(False)
+        # Выбираем лучшую схему по качеству (выше — лучше)
+        def score(rems: List[Rectangle]) -> float:
+            s = 0.0
+            for r in rems:
+                aspect = max(r.width, r.height) / max(1.0, min(r.width, r.height))
+                s += r.area * (1.0 / aspect)
+            return s
+        chosen_remainders = remainders_rt if score(remainders_rt) >= score(remainders_tr) else remainders_tr
+
+        # Применяем размещение
+        placed_detail = PlacedItem(
+            x=free_item.x,
+            y=free_item.y,
+            width=width,
+            height=height,
+            item_type="detail",
+            detail=detail,
+            is_rotated=is_rotated
+        )
+        layout.placed_items.append(placed_detail)
+        try:
+            layout.placed_items.remove(free_item)
+        except ValueError:
+            layout.placed_items.remove(placed_detail)
+            return False
+        for r in chosen_remainders:
+            self._classify_and_add_area(r, layout)
+        return True
 
     def _can_place_detail_in_remnant_moderate(self, detail: Detail, remnant: PlacedItem, layout: SheetLayout) -> bool:
         """Умеренная проверка возможности размещения детали в остатке"""
@@ -1567,7 +1869,6 @@ class GuillotineOptimizer:
         max_side = max(area.width, area.height)
         param_min = min(self.params.min_remnant_width, self.params.min_remnant_height)
         param_max = max(self.params.min_remnant_width, self.params.min_remnant_height)
-
         is_remnant = (min_side > param_min and max_side > param_max)
 
         item_type = "remnant" if is_remnant else "waste"
