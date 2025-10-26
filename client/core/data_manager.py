@@ -153,7 +153,8 @@ class DataManager(QObject):
                     self.optimization_result = result
                     self.optimization_result_signal.emit(result)
                 else:
-                    error_msg = "Оптимизация не дала результатов"
+                    # Используем детальное сообщение из результата оптимизации
+                    error_msg = result.message if result else "Оптимизация не дала результатов"
                     self.optimization_error_signal.emit(error_msg)
                     
             except Exception as e:
