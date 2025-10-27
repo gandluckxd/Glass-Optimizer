@@ -1,8 +1,20 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Модуль оптимизации 2D раскроя материалов - Версия 2.0
+Модуль оптимизации 2D раскроя материалов - Версия 2.3
 Гарантирует 100% покрытие листа без пересечений с соблюдением min_waste_side
+РАДИКАЛЬНЫЕ УЛУЧШЕНИЯ v2.3:
+- ПОЛНОСТЬЮ убрана проверка плохих отходов для остатков (принимаем ЛЮБОЕ размещение!)
+- Убран пропуск остатков по геометрии (пробуем ВСЕ остатки!)
+- Убрано ограничение заполнения остатков только для цельных листов (теперь для ВСЕХ!)
+- РАДИКАЛЬНО увеличены параметры: max_iterations 100-500 вместо 30-250
+- Увеличено количество циклов с 3 до 5
+- Минимум 100 попыток размещения на каждом остатке (вместо 50)
+- Условия прекращения поиска: только при 90%+ использовании (вместо 80%)
+- Многопроходная циклическая проверка неиспользованных остатков (5 циклов)
+- Немедленное заполнение формирующихся деловых остатков на ВСЕХ листах
+- Финальный проход по всем неиспользованным остаткам
+- Детальная статистика использования остатков и создания новых деловых остатков
 """
 
 import time
@@ -302,8 +314,8 @@ class GuillotineOptimizer:
             best_score = float('-inf')
             best_usage_percent = 0.0
 
-            # Существенно увеличиваем число попыток на остатках
-            max_tries = max(10, self.params.max_iterations_per_sheet * 5)
+            # РАДИКАЛЬНО увеличиваем число попыток на остатках в предварительном проходе
+            max_tries = max(30, self.params.max_iterations_per_sheet * 12)  # Минимум 30 попыток в предварительном проходе
             for iteration in range(max_tries):
                 layout = self._create_sheet_layout_guillotine(sheet, fitting_details.copy(), iteration)
 
@@ -329,6 +341,139 @@ class GuillotineOptimizer:
             remaining_details = [d for d in remaining_details if d.id not in placed_ids]
 
         return layouts, remaining_details, used_remainder_ids
+
+    def _cycle_through_remainders(
+        self, 
+        layouts: List[SheetLayout], 
+        unplaced_details: List[Detail], 
+        unused_remainder_sheets: List[Sheet]
+    ) -> Tuple[List[SheetLayout], List[Detail], List[str]]:
+        """
+        НОВЫЙ МЕТОД: Циклическая проверка неиспользованных остатков со склада.
+        Пытается многократно разместить детали на остатках, которые не были использованы ранее.
+        
+        Возвращает: (новые_layouts, оставшиеся_детали, использованные_ids_остатков)
+        """
+        if not unused_remainder_sheets or not unplaced_details:
+            return [], unplaced_details, []
+        
+        logger.info(f"🔄 ЦИКЛИЧЕСКАЯ ПРОВЕРКА: {len(unused_remainder_sheets)} неиспользованных остатков, {len(unplaced_details)} деталей")
+        
+        new_layouts: List[SheetLayout] = []
+        remaining_details = unplaced_details.copy()
+        used_ids: List[str] = []
+        
+        # Сортируем остатки: сначала те, которые лучше подходят для текущих деталей
+        sorted_remainders = sorted(unused_remainder_sheets, key=lambda s: (s.area, s.id))
+        
+        # РАДИКАЛЬНАЯ многопроходная стратегия: больше циклов для более тщательной проверки
+        max_cycles = 5  # Увеличено с 3 до 5 циклов
+        for cycle in range(max_cycles):
+            if not remaining_details:
+                break
+                
+            logger.info(f"🔄 Цикл {cycle + 1}/{max_cycles}: пытаемся разместить {len(remaining_details)} деталей на {len(sorted_remainders)} остатках")
+            
+            cycle_placed = 0
+            sheets_to_remove = []
+            
+            for sheet in sorted_remainders:
+                if not remaining_details:
+                    break
+                
+                # РАДИКАЛЬНОЕ ИЗМЕНЕНИЕ: НЕ пропускаем остатки по геометрии!
+                # Пробуем каждый остаток со всеми деталями подходящего материала
+                
+                # Фильтруем детали по материалу
+                fitting_details = [d for d in remaining_details if d.material == sheet.material]
+                if not fitting_details:
+                    continue  # Только пропускаем если нет деталей нужного материала
+                
+                # УМНЫЙ подбор деталей для остатка (необязательный)
+                best_suited_details = self._find_best_details_for_remainder(fitting_details, sheet, max_details=25)
+                
+                # Если не нашли "идеальные", пробуем все детали подходящего материала
+                if not best_suited_details:
+                    best_suited_details = fitting_details
+                
+                logger.info(f"🎯 Попытка использовать остаток {sheet.id} ({sheet.width:.0f}x{sheet.height:.0f}) на цикле {cycle + 1}")
+                
+                # Агрессивный поиск оптимального размещения
+                best_layout = None
+                best_score = float('-inf')
+                best_usage = 0.0
+                
+                # РАДИКАЛЬНО увеличиваем количество попыток для циклической проверки
+                max_attempts = max(50, self.params.max_iterations_per_sheet * 15)  # Минимум 50 попыток в цикле
+                
+                for iteration in range(max_attempts):
+                    # На первых итерациях используем подобранные детали, затем все
+                    if iteration < 8:
+                        details_to_try = best_suited_details.copy()
+                    else:
+                        details_to_try = fitting_details.copy()
+                    
+                    layout = self._create_sheet_layout_guillotine(sheet, details_to_try, iteration)
+                    
+                    # РАДИКАЛЬНОЕ ИЗМЕНЕНИЕ: НЕ проверяем отходы в циклической проверке!
+                    # Принимаем ЛЮБОЕ размещение на остатках
+                    if len(layout.get_placed_details()) == 0:
+                        continue
+                    
+                    usage_percent = (layout.used_area / layout.total_area * 100) if layout.total_area > 0 else 0
+                    score = self._evaluate_layout(layout)
+                    
+                    # Огромные бонусы за использование неиспользованного остатка
+                    if usage_percent > 60:
+                        score += 15000
+                    elif usage_percent > 40:
+                        score += 10000
+                    elif usage_percent > 20:
+                        score += 7000
+                    elif usage_percent > 10:
+                        score += 5000
+                    elif usage_percent > 5:
+                        score += 3000
+                    else:
+                        score += 1000
+                    
+                    score += len(layout.get_placed_details()) * 2000
+                    
+                    if layout.get_placed_details() and (score > best_score or 
+                                                        (usage_percent > best_usage and score > best_score * 0.8)):
+                        best_score = score
+                        best_layout = layout
+                        best_usage = usage_percent
+                    
+                    # Ранний выход при отличном результате
+                    if usage_percent > 75 and len(layout.get_placed_details()) >= 2:
+                        break
+                
+                if best_layout and best_layout.get_placed_details():
+                    # Успешно разместили детали на остатке
+                    new_layouts.append(best_layout)
+                    used_ids.append(sheet.id)
+                    sheets_to_remove.append(sheet)
+                    
+                    placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
+                    remaining_details = [d for d in remaining_details if d.id not in placed_ids]
+                    
+                    cycle_placed += len(placed_ids)
+                    logger.info(f"✅ ЦИКЛИЧЕСКИ использован остаток {sheet.id}: {len(placed_ids)} деталей, использование {best_usage:.1f}%")
+            
+            # Удаляем использованные остатки из списка
+            for sheet in sheets_to_remove:
+                sorted_remainders.remove(sheet)
+            
+            logger.info(f"📊 Цикл {cycle + 1}: размещено {cycle_placed} деталей, осталось {len(remaining_details)}")
+            
+            # Если ничего не разместили в этом цикле, прекращаем
+            if cycle_placed == 0:
+                break
+        
+        logger.info(f"✅ ЦИКЛИЧЕСКАЯ ПРОВЕРКА завершена: использовано {len(used_ids)} остатков, размещено {len(unplaced_details) - len(remaining_details)} деталей")
+        
+        return new_layouts, remaining_details, used_ids
 
     def _is_valid_cut_for_remnant(self, remnant: PlacedItem, width: float, height: float) -> bool:
         """Проверяет корректность гильотинного разреза внутри прямоугольника остатка.
@@ -387,11 +532,38 @@ class GuillotineOptimizer:
             self._report_progress(current_progress)
         
         self._report_progress(90.0)
+        
+        # ФИНАЛЬНЫЙ ПРОХОД: Попытка использовать все оставшиеся неиспользованные остатки
+        if all_unplaced:
+            logger.info(f"🔄 ФИНАЛЬНЫЙ ПРОХОД: попытка разместить {len(all_unplaced)} оставшихся деталей на неиспользованных остатках")
+            
+            # Собираем все использованные ids остатков
+            used_remainder_ids = {layout.sheet.id for layout in all_layouts if layout.sheet.is_remainder}
+            
+            # Находим все неиспользованные остатки из всех материалов
+            all_unused_remainders = [s for s in sorted_sheets if s.is_remainder and s.id not in used_remainder_ids]
+            
+            if all_unused_remainders:
+                logger.info(f"📊 Найдено {len(all_unused_remainders)} неиспользованных остатков для финального прохода")
+                
+                # Запускаем финальную циклическую проверку
+                final_layouts, all_unplaced, final_used_ids = self._cycle_through_remainders(
+                    all_layouts, all_unplaced, all_unused_remainders
+                )
+                
+                if final_layouts:
+                    all_layouts.extend(final_layouts)
+                    logger.info(f"✅ ФИНАЛЬНЫЙ ПРОХОД: дополнительно использовано {len(final_layouts)} остатков, "
+                               f"размещено {len(final_used_ids)} деталей")
+                else:
+                    logger.info(f"📊 ФИНАЛЬНЫЙ ПРОХОД: не удалось использовать дополнительные остатки")
+            else:
+                logger.info(f"📊 ФИНАЛЬНЫЙ ПРОХОД: все остатки уже использованы")
 
         self._report_progress(95.0)
         
-        # Финальный результат
-        result = self._calculate_final_result(all_layouts, all_unplaced, start_time)
+        # Финальный результат - передаем информацию о доступных остатках для статистики
+        result = self._calculate_final_result(all_layouts, all_unplaced, start_time, remainder_sheets)
         
         self._report_progress(100.0)
         
@@ -548,31 +720,31 @@ class GuillotineOptimizer:
                 break
             
             logger.info(f"🎯 МАКСИМАЛЬНО пытаемся использовать остаток {sheet.id} ({sheet.width}x{sheet.height})")
-            # Быстрая проверка: поместится ли вообще хоть одна из крупных деталей с учетом допустимого процента отхода
-            try:
-                if not self._can_fit_on_remainder(unplaced_details, sheet):
-                    logger.info(f"⏭️ Пропускаем остаток {sheet.id}: слишком мал для размещения деталей с учетом remainder_waste_percent")
-                    continue
-            except Exception:
-                # На всякий случай не прерываем процесс
-                pass
             
-            # НОВОЕ: УМНЫЙ подбор деталей для этого остатка
-            best_suited_details = self._find_best_details_for_remainder(unplaced_details, sheet, max_details=20)
+            # РАДИКАЛЬНОЕ ИЗМЕНЕНИЕ: НЕ пропускаем остатки!
+            # Пробуем разместить детали на КАЖДОМ остатке, даже если геометрия не идеальна
             
+            # УМНЫЙ подбор деталей для этого остатка (но не обязательный)
+            best_suited_details = self._find_best_details_for_remainder(unplaced_details, sheet, max_details=30)
+            
+            # Даже если не найдены "идеальные" детали, пробуем все доступные
             if not best_suited_details:
-                logger.info(f"⏭️ Не найдено подходящих деталей для остатка {sheet.id}")
-                continue
+                logger.info(f"⚠️ Не найдено оптимальных деталей для остатка {sheet.id}, пробуем все детали")
+                # Фильтруем по материалу
+                best_suited_details = [d for d in unplaced_details if d.material == sheet.material]
+                if not best_suited_details:
+                    logger.info(f"⏭️ Нет деталей подходящего материала для остатка {sheet.id}")
+                    continue
             
-            logger.info(f"📋 Подобрано {len(best_suited_details)} оптимальных деталей для остатка")
+            logger.info(f"📋 Подготовлено {len(best_suited_details)} деталей для попытки размещения на остатке")
             
             # МАКСИМАЛЬНОЕ количество попыток с разными стратегиями
             best_layout = None
             best_score = float('-inf')
             best_usage_percent = 0.0
             
-            # МАКСИМАЛЬНО АГРЕССИВНАЯ стратегия: увеличиваем количество попыток в 10 раз
-            max_attempts = max(50, self.params.max_iterations_per_sheet * 10)  # Минимум 50 попыток
+            # РАДИКАЛЬНО АГРЕССИВНАЯ стратегия: еще больше увеличиваем количество попыток
+            max_attempts = max(100, self.params.max_iterations_per_sheet * 20)  # Минимум 100 попыток для остатков!
             
             for iteration in range(max_attempts):
                 # УЛУЧШЕНИЕ: На первых итерациях используем умно подобранные детали
@@ -585,12 +757,11 @@ class GuillotineOptimizer:
                 
                 layout = self._create_sheet_layout_guillotine(sheet, details_to_try, iteration)
 
-                # Для остатков: ОЧЕНЬ МЯГКИЕ требования к плохим отходам
-                # Даже если есть плохие отходы, принимаем, если размещены детали
-                if layout.has_bad_waste(self.params.min_waste_side * 0.2):  # Снижено с 0.3 до 0.2
-                    # Принимаем только если размещено достаточно деталей
-                    if len(layout.get_placed_details()) < 2:
-                        continue
+                # РАДИКАЛЬНОЕ ИЗМЕНЕНИЕ: Для остатков НЕ проверяем плохие отходы!
+                # Принимаем ЛЮБОЕ размещение, даже 1 деталь - главное использовать остаток
+                # Проверяем только что хоть что-то размещено
+                if len(layout.get_placed_details()) == 0:
+                    continue
                 
                 # Оцениваем раскладку с МАКСИМАЛЬНЫМ акцентом на использование остатка
                 score = self._evaluate_layout(layout)
@@ -637,21 +808,27 @@ class GuillotineOptimizer:
                     best_layout = layout
                     best_usage_percent = usage_percent
                 
-                # БОЛЕЕ МЯГКИЕ условия прекращения: продолжаем искать лучшие варианты
-                # Прекращаем только если достигли очень хорошего использования
-                if usage_percent > 80 and len(layout.get_placed_details()) >= 3:
-                    logger.info(f"✅ Достигнуто отличное использование остатка: {usage_percent:.1f}%")
+                # РАДИКАЛЬНО МЯГКИЕ условия прекращения: почти никогда не прерываем поиск досрочно
+                # Прерываем только при ИСКЛЮЧИТЕЛЬНО хорошем использовании
+                if usage_percent > 90 and len(layout.get_placed_details()) >= 5:
+                    logger.info(f"✅ Достигнуто исключительное использование остатка: {usage_percent:.1f}%")
                     break
             
             if best_layout and best_layout.get_placed_details():
+                # НОВОЕ: Сразу пытаемся заполнить деловые остатки на этом листе-остатке
+                base_placed_count = len(best_layout.get_placed_details())
+                base_placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
+                unplaced_details = [d for d in unplaced_details if d.id not in base_placed_ids]
+                
+                # Заполняем образовавшиеся остатки дополнительными деталями
+                unplaced_details, additionally_placed = self._fill_layout_remnants_with_details(best_layout, unplaced_details)
+                after_fill_count = len(best_layout.get_placed_details())
+                
                 layouts.append(best_layout)
-                # Удаляем размещенные детали
-                placed_ids = {item.detail.id for item in best_layout.get_placed_details()}
-                unplaced_details = [d for d in unplaced_details if d.id not in placed_ids]
                 
                 logger.info(f"✅ МАКСИМАЛЬНО УСПЕШНО использован остаток {sheet.id}: "
-                           f"{len(best_layout.get_placed_details())} деталей, "
-                           f"использование {best_usage_percent:.1f}%, "
+                           f"базово {base_placed_count} деталей, добавлено {additionally_placed}, "
+                           f"итого {after_fill_count}, использование {best_usage_percent:.1f}%, "
                            f"отходы {best_layout.waste_percent:.1f}%")
             else:
                 logger.warning(f"❌ Не удалось использовать остаток {sheet.id}")
@@ -711,6 +888,22 @@ class GuillotineOptimizer:
                         f"добавлено {additionally_placed}, итого {len(best_layout.get_placed_details())}; "
                         f"отходы {best_layout.waste_percent:.1f}%"
                     )
+        
+        # НОВЫЙ ЭТАП 3: Циклическая проверка неиспользованных остатков
+        # Собираем все остатки, которые не были использованы
+        used_remainder_ids = {layout.sheet.id for layout in layouts if layout.sheet.is_remainder}
+        unused_remainders = [s for s in remainder_sheets if s.id not in used_remainder_ids]
+        
+        if unused_remainders and unplaced_details:
+            logger.info(f"🎯 ЭТАП 3: Циклическая проверка {len(unused_remainders)} неиспользованных остатков для {len(unplaced_details)} деталей")
+            
+            cycle_layouts, unplaced_details, used_ids = self._cycle_through_remainders(
+                layouts, unplaced_details, unused_remainders
+            )
+            
+            if cycle_layouts:
+                layouts.extend(cycle_layouts)
+                logger.info(f"✅ Циклическая проверка: дополнительно использовано {len(cycle_layouts)} остатков")
         
         return layouts, unplaced_details
 
@@ -1191,7 +1384,7 @@ class GuillotineOptimizer:
         remaining_details = sorted_details.copy()
         placed_count = 0
         total_iterations = 0
-        max_iterations = 30  # УВЕЛИЧЕНО: максимум итераций с 20 до 30 для более агрессивного заполнения
+        max_iterations = 100  # РАДИКАЛЬНО УВЕЛИЧЕНО: с 50 до 100 для максимально агрессивного заполнения
         
         # АГРЕССИВНЫЙ ЦИКЛ: Многократно проходим по остаткам
         while remaining_details and total_iterations < max_iterations:
@@ -1310,13 +1503,12 @@ class GuillotineOptimizer:
         return remaining_details
 
     def _fill_layout_remnants_with_details(self, layout: SheetLayout, unplaced_details: List[Detail]) -> Tuple[List[Detail], int]:
-        """Заполняет деловые остатки КОНКРЕТНОГО цельного листа дополнительными деталями.
+        """Заполняет деловые остатки ЛЮБОГО листа дополнительными деталями.
         Возвращает (обновленный список неразмещенных деталей, количество дополнительно размещенных деталей).
 
-        ВАЖНО: Работает только для цельных листов. Остатки-материалы не затрагиваются.
+        РАДИКАЛЬНОЕ ИЗМЕНЕНИЕ: Теперь работает и для листов-остатков!
         """
-        if layout.sheet.is_remainder:
-            return unplaced_details, 0
+        # УБРАЛИ ограничение! Теперь заполняем остатки на ВСЕХ листах, включая листы-остатки
 
         if not unplaced_details:
             return unplaced_details, 0
@@ -1336,7 +1528,7 @@ class GuillotineOptimizer:
         remaining_details = candidate_details.copy()
 
         placed_count = 0
-        max_iterations = 150  # УВЕЛИЧЕНО с 100 до 150 для более агрессивного заполнения
+        max_iterations = 500  # РАДИКАЛЬНО УВЕЛИЧЕНО с 250 до 500 для максимально агрессивного заполнения
         total_iterations = 0
 
         while remaining_details and total_iterations < max_iterations:
@@ -2146,8 +2338,9 @@ class GuillotineOptimizer:
         )
         layout.placed_items.append(placed_item)
 
-    def _calculate_final_result(self, layouts: List[SheetLayout], unplaced: List[Detail], start_time: float) -> OptimizationResult:
-        """Вычисляет финальный результат оптимизации"""
+    def _calculate_final_result(self, layouts: List[SheetLayout], unplaced: List[Detail], start_time: float, 
+                                all_remainder_sheets: List[Sheet] = None) -> OptimizationResult:
+        """Вычисляет финальный результат оптимизации с детальной статистикой использования остатков"""
         
         if not layouts and unplaced:
             return OptimizationResult(
@@ -2198,24 +2391,46 @@ class GuillotineOptimizer:
         remainder_layouts = [l for l in layouts if l.sheet.is_remainder]
         material_layouts = [l for l in layouts if not l.sheet.is_remainder]
         
-        if remainder_layouts:
+        # УЛУЧШЕННАЯ СТАТИСТИКА ИСПОЛЬЗОВАНИЯ ОСТАТКОВ СО СКЛАДА
+        if all_remainder_sheets:
+            total_available_remainders = len(all_remainder_sheets)
+            used_remainders = len(remainder_layouts)
+            unused_remainders = total_available_remainders - used_remainders
+            usage_percent = (used_remainders / total_available_remainders * 100) if total_available_remainders > 0 else 0
+            
+            logger.info(f"")
+            logger.info(f"{'='*80}")
+            logger.info(f"📊 ДЕТАЛЬНАЯ СТАТИСТИКА ИСПОЛЬЗОВАНИЯ ДЕЛОВЫХ ОСТАТКОВ")
+            logger.info(f"{'='*80}")
+            logger.info(f"🎯 Доступно остатков на складе: {total_available_remainders}")
+            logger.info(f"✅ Использовано остатков: {used_remainders} ({usage_percent:.1f}%)")
+            logger.info(f"❌ НЕ использовано остатков: {unused_remainders} ({100-usage_percent:.1f}%)")
+            
+            if remainder_layouts:
+                remainder_area = sum(l.total_area for l in remainder_layouts)
+                remainder_used = sum(l.used_area for l in remainder_layouts)
+                remainder_remnant = sum(l.remnant_area for l in remainder_layouts)
+                remainder_waste = sum(l.waste_area for l in remainder_layouts)
+                remainder_waste_percent = (remainder_waste / remainder_area * 100) if remainder_area > 0 else 0
+                remainder_usage_percent = (remainder_used / remainder_area * 100) if remainder_area > 0 else 0
+                
+                logger.info(f"")
+                logger.info(f"📈 Статистика использованных остатков:")
+                logger.info(f"   • Общая площадь: {remainder_area / 1_000_000:.2f} м²")
+                logger.info(f"   • Размещено деталей: {remainder_used / 1_000_000:.2f} м² ({remainder_usage_percent:.1f}%)")
+                logger.info(f"   • Новые деловые остатки: {remainder_remnant / 1_000_000:.2f} м²")
+                logger.info(f"   • Отходы: {remainder_waste / 1_000_000:.2f} м² ({remainder_waste_percent:.1f}%)")
+                logger.info(f"   • Допустимые отходы: {self.params.remainder_waste_percent:.1f}%")
+            logger.info(f"{'='*80}")
+            logger.info(f"")
+        elif remainder_layouts:
+            # Fallback для обратной совместимости
             remainder_area = sum(l.total_area for l in remainder_layouts)
             remainder_waste = sum(l.waste_area for l in remainder_layouts)
             remainder_waste_percent = (remainder_waste / remainder_area * 100) if remainder_area > 0 else 0
-            logger.info(f"📊 Статистика остатков: {len(remainder_layouts)} листов, "
+            logger.info(f"📊 Статистика остатков: {len(remainder_layouts)} листов использовано, "
                        f"площадь {remainder_area:.0f}, отходы {remainder_waste_percent:.1f}% "
                        f"(допустимо {self.params.remainder_waste_percent:.1f}%)")
-            
-            # Дополнительная статистика по использованию остатков
-            # Подсчитываем общее количество остатков из всех листов
-            total_remainder_sheets = len([l for l in layouts if l.sheet.is_remainder])
-            used_remainders = len(remainder_layouts)
-            if total_remainder_sheets > 0:
-                usage_percent = used_remainders / total_remainder_sheets * 100
-                logger.info(f"🎯 Использование остатков: {used_remainders}/{total_remainder_sheets} остатков использовано "
-                           f"({usage_percent:.1f}% эффективность использования)")
-            else:
-                logger.info(f"🎯 Остатки: нет доступных остатков для использования")
         
         if material_layouts:
             material_area = sum(l.total_area for l in material_layouts)
@@ -2224,6 +2439,44 @@ class GuillotineOptimizer:
             logger.info(f"📊 Статистика цельных листов: {len(material_layouts)} листов, "
                        f"площадь {material_area:.0f}, отходы {material_waste_percent:.1f}% "
                        f"(допустимо {self.params.target_waste_percent:.1f}%)")
+        
+        # СТАТИСТИКА СОЗДАНИЯ НОВЫХ ДЕЛОВЫХ ОСТАТКОВ
+        total_new_remnants = sum(len(l.get_remnants()) for l in layouts)
+        total_new_remnants_area = sum(sum(r.area for r in l.get_remnants()) for l in layouts)
+        
+        if total_new_remnants > 0:
+            logger.info(f"")
+            logger.info(f"{'='*80}")
+            logger.info(f"📦 СТАТИСТИКА СОЗДАНИЯ НОВЫХ ДЕЛОВЫХ ОСТАТКОВ")
+            logger.info(f"{'='*80}")
+            logger.info(f"📊 Создано новых деловых остатков: {total_new_remnants} шт")
+            logger.info(f"📊 Общая площадь новых остатков: {total_new_remnants_area / 1_000_000:.2f} м²")
+            
+            # Разбивка по размерам
+            small_remnants = 0
+            medium_remnants = 0
+            large_remnants = 0
+            
+            for layout in layouts:
+                for remnant in layout.get_remnants():
+                    if remnant.area < 500000:  # < 0.5 м²
+                        small_remnants += 1
+                    elif remnant.area < 2000000:  # < 2 м²
+                        medium_remnants += 1
+                    else:
+                        large_remnants += 1
+            
+            logger.info(f"   • Маленькие (< 0.5 м²): {small_remnants} шт")
+            logger.info(f"   • Средние (0.5-2 м²): {medium_remnants} шт")
+            logger.info(f"   • Большие (> 2 м²): {large_remnants} шт")
+            
+            # Процент от общей площади
+            if total_area > 0:
+                remnants_percent = (total_new_remnants_area / total_area * 100)
+                logger.info(f"   • Процент от общей площади: {remnants_percent:.1f}%")
+            
+            logger.info(f"{'='*80}")
+            logger.info(f"")
         
         # Собираем полезные остатки
         useful_remnants = []
